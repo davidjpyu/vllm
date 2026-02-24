@@ -930,6 +930,24 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
     message(STATUS "Building hadacore")
   endif()
 
+  #
+  # Helix All-to-All native kernel (requires SM90+ / Hopper and CUDA 12.0+)
+  #
+  cuda_archs_loose_intersection(HELIX_A2A_ARCHS "9.0a;" "${CUDA_ARCHS}")
+  if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.0 AND HELIX_A2A_ARCHS)
+    set(HELIX_A2A_SRCS
+      "csrc/helix_alltoall/helix_alltoall.cu"
+      "csrc/helix_alltoall/helix_alltoall_op.cpp")
+    set_gencode_flags_for_srcs(
+      SRCS "${HELIX_A2A_SRCS}"
+      CUDA_ARCHS "${HELIX_A2A_ARCHS}")
+    list(APPEND VLLM_EXT_SRC "${HELIX_A2A_SRCS}")
+    list(APPEND VLLM_GPU_FLAGS "-DENABLE_HELIX_ALLTOALL=1")
+    message(STATUS "Building Helix All-to-All native kernel for archs: ${HELIX_A2A_ARCHS}")
+  else()
+    message(STATUS "Not building Helix All-to-All native kernel (requires CUDA >= 12.0 and SM90+)")
+  endif()
+
 # if CUDA endif
 endif()
 

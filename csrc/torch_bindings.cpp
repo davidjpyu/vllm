@@ -6,6 +6,17 @@
 #include <torch/library.h>
 #include <torch/version.h>
 
+#ifdef ENABLE_HELIX_ALLTOALL
+// Helix All-to-All native ops (defined in
+// csrc/helix_alltoall/helix_alltoall_op.cpp)
+std::tuple<torch::Tensor, torch::Tensor> alltoall_helix_native(
+    torch::Tensor partial_o, torch::Tensor softmax_stats,
+    torch::Tensor workspace, int64_t cp_rank, int64_t cp_size);
+void initialize_helix_workspace(torch::Tensor workspace, int64_t cp_rank,
+                                int64_t cp_size);
+int64_t get_helix_workspace_size_per_rank(int64_t cp_size);
+#endif
+
 // Note on op signatures:
 // The X_meta signatures are for the meta functions corresponding to op X.
 // They must be kept in sync with the signature for X. Generally, only
@@ -691,6 +702,24 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "SymInt n, SymInt group_size, SymInt sm_count, SymInt sm_version, SymInt "
       "CUBLAS_M_THRESHOLD, bool has_zp, bool n32k16_reorder) -> Tensor");
   //  conditionally compiled so impl in source file
+#endif
+
+#ifdef ENABLE_HELIX_ALLTOALL
+  // Helix All-to-All native ops
+  ops.def(
+      "alltoall_helix_native(Tensor partial_o, Tensor softmax_stats, "
+      "Tensor(a!) workspace, int cp_rank, int cp_size) -> (Tensor, Tensor)");
+  ops.impl("alltoall_helix_native", torch::kCUDA, &alltoall_helix_native);
+
+  ops.def(
+      "initialize_helix_workspace(Tensor(a!) workspace, int cp_rank, "
+      "int cp_size) -> ()");
+  ops.impl("initialize_helix_workspace", torch::kCUDA,
+           &initialize_helix_workspace);
+
+  ops.def("get_helix_workspace_size_per_rank(int cp_size) -> int");
+  ops.impl("get_helix_workspace_size_per_rank",
+           &get_helix_workspace_size_per_rank);
 #endif
 }
 
