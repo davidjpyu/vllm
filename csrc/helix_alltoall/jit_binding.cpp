@@ -13,7 +13,7 @@
  *           "csrc/helix_alltoall/helix_alltoall_op.cpp",
  *           "csrc/helix_alltoall/jit_binding.cpp",
  *       ],
- *       extra_include_dirs=["csrc/helix_alltoall"],
+ *       extra_include_paths=["csrc/helix_alltoall"],
  *       extra_cuda_cflags=["-O3", "--use_fast_math",
  *                          "-gencode=arch=compute_90a,code=sm_90a"],
  *       extra_cflags=["-O3"],

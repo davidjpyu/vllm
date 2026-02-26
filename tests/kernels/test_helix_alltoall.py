@@ -36,7 +36,7 @@ def load_helix_extension():
             str(src_dir / "helix_alltoall_op.cpp"),
             str(src_dir / "jit_binding.cpp"),
         ],
-        extra_include_dirs=[str(src_dir)],
+        extra_include_paths=[str(src_dir)],
         extra_cuda_cflags=[
             "-O3",
             "--use_fast_math",
