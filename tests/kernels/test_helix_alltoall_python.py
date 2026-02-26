@@ -240,23 +240,28 @@ def test_run_half_dtype(ops):
     print("PASS: test_run_half_dtype")
 
 
-def test_multiple_cp_sizes(ops):
-    """Managers for different cp_sizes coexist without interference."""
-    managers = {}
-    D = 64
-    for cp in [1, 2, 4]:
-        mgr = _StandaloneManager(ops, cp_rank=0, cp_size=cp)
-        managers[cp] = mgr
+def test_multiple_cp_sizes_workspace(ops):
+    """Workspace allocation for different cp_sizes works without interference.
 
-    for cp, mgr in managers.items():
-        po = torch.randn(8, cp, D, dtype=torch.bfloat16, device="cuda")
-        ss = torch.randn(8, cp, 2, dtype=torch.float32, device="cuda")
-        po_out, ss_out = mgr.run(po, ss)
+    NOTE: Only tests allocation + init, NOT kernel launch.  Running the kernel
+    with cp_size>1 on a single process hangs because the receiver threads
+    spin-wait for data from non-existent ranks.  Multi-rank kernel correctness
+    is deferred to Phase 5 (requires MNNVL shared workspace from Phase 3).
+    """
+    prev_shapes = {}
+    for cp in [1, 2, 4, 8]:
+        ws_bytes = ops.get_helix_workspace_size_per_rank(cp)
+        ws_elems = (ws_bytes + 7) // 8
+        workspace = torch.zeros(cp, ws_elems, dtype=torch.long, device="cuda")
+        ops.initialize_helix_workspace(workspace, 0, cp)
         torch.cuda.synchronize()
-        assert po_out.shape == po.shape, f"cp_size={cp}: shape mismatch"
-        assert ss_out.shape == ss.shape, f"cp_size={cp}: shape mismatch"
+        prev_shapes[cp] = workspace.shape
+        assert workspace.shape[0] == cp
+        assert workspace.shape[1] == ws_elems
 
-    print("PASS: test_multiple_cp_sizes")
+    assert prev_shapes[2][1] == prev_shapes[4][1], \
+        "workspace elems per rank should be the same across cp_sizes (only rows change)"
+    print("PASS: test_multiple_cp_sizes_workspace")
 
 
 def test_workspace_reuse(ops):
@@ -299,7 +304,7 @@ ALL_TESTS = {
     "correctness": test_run_self_send_correctness,
     "highdim": test_run_higher_dims,
     "half": test_run_half_dtype,
-    "multi_cp": test_multiple_cp_sizes,
+    "multi_cp": test_multiple_cp_sizes_workspace,
     "reuse": test_workspace_reuse,
     "var_ss": test_variable_softmax_stats_width,
 }
