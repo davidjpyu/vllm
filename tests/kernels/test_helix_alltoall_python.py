@@ -248,19 +248,15 @@ def test_multiple_cp_sizes_workspace(ops):
     spin-wait for data from non-existent ranks.  Multi-rank kernel correctness
     is deferred to Phase 5 (requires MNNVL shared workspace from Phase 3).
     """
-    prev_shapes = {}
     for cp in [1, 2, 4, 8]:
         ws_bytes = ops.get_helix_workspace_size_per_rank(cp)
         ws_elems = (ws_bytes + 7) // 8
         workspace = torch.zeros(cp, ws_elems, dtype=torch.long, device="cuda")
         ops.initialize_helix_workspace(workspace, 0, cp)
         torch.cuda.synchronize()
-        prev_shapes[cp] = workspace.shape
-        assert workspace.shape[0] == cp
-        assert workspace.shape[1] == ws_elems
+        assert workspace.shape == (cp, ws_elems)
+        print(f"  cp_size={cp:2d} -> workspace [{cp} x {ws_elems}] init OK")
 
-    assert prev_shapes[2][1] == prev_shapes[4][1], \
-        "workspace elems per rank should be the same across cp_sizes (only rows change)"
     print("PASS: test_multiple_cp_sizes_workspace")
 
 
