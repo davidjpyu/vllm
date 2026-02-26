@@ -15,7 +15,7 @@
  */
 
 #include <ATen/cuda/CUDAContext.h>
-#include <torch/library.h>
+#include <torch/extension.h>
 
 #include "helix_alltoall.h"
 

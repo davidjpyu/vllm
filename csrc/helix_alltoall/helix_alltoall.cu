@@ -20,7 +20,9 @@
 #include "helix_common.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 
