@@ -13,6 +13,7 @@ The JIT extension is cached in ~/.cache/torch_extensions/ across sessions.
 """
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -22,8 +23,27 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[2]  # nim/a2a-comm/vllm-a2a
 
 
+def _ensure_writable_cache():
+    """Fall back to a writable cache dir if the default is not writable."""
+    cache_dir = os.environ.get("TORCH_EXTENSIONS_DIR")
+    if cache_dir and os.access(os.path.dirname(cache_dir) or ".", os.W_OK):
+        return
+    # Default cache may be in a read-only container path; try alternatives
+    for candidate in [
+        Path.home() / ".cache" / "torch_extensions",
+        REPO_ROOT / ".build_cache" / "torch_extensions",
+    ]:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            os.environ["TORCH_EXTENSIONS_DIR"] = str(candidate)
+            return
+        except OSError:
+            continue
+
+
 def load_helix_extension():
     """JIT-compile the helix all-to-all extension (cached after first call)."""
+    _ensure_writable_cache()
     from torch.utils.cpp_extension import load
 
     src_dir = REPO_ROOT / "csrc" / "helix_alltoall"
