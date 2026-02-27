@@ -248,13 +248,9 @@ def test_mnnvl_allocation_distributed(ops):
     world_size = dist.get_world_size()
     cp_size = world_size
 
-    sys.path.insert(0, str(REPO_ROOT))
-    from vllm.distributed.helix_mnnvl_workspace import (
-        allocate_helix_mnnvl_workspace,
-        is_flashinfer_mnnvl_available,
-    )
+    mod = _load_mnnvl_workspace_module()
 
-    if not is_flashinfer_mnnvl_available():
+    if not mod.is_flashinfer_mnnvl_available():
         if rank == 0:
             print("SKIP: test_mnnvl_allocation_distributed — FlashInfer MNNVL not available")
         return
@@ -262,7 +258,7 @@ def test_mnnvl_allocation_distributed(ops):
     ws_bytes = ops.get_helix_workspace_size_per_rank(cp_size)
     gloo_group = dist.new_group(backend="gloo")
 
-    workspace, handle = allocate_helix_mnnvl_workspace(
+    workspace, handle = mod.allocate_helix_mnnvl_workspace(
         cp_rank=rank,
         cp_size=cp_size,
         ws_bytes_per_rank=ws_bytes,
@@ -291,13 +287,9 @@ def test_mnnvl_init_and_run_distributed(ops):
     world_size = dist.get_world_size()
     cp_size = world_size
 
-    sys.path.insert(0, str(REPO_ROOT))
-    from vllm.distributed.helix_mnnvl_workspace import (
-        allocate_helix_mnnvl_workspace,
-        is_flashinfer_mnnvl_available,
-    )
+    mod = _load_mnnvl_workspace_module()
 
-    if not is_flashinfer_mnnvl_available():
+    if not mod.is_flashinfer_mnnvl_available():
         if rank == 0:
             print("SKIP: test_mnnvl_init_and_run_distributed — FlashInfer MNNVL not available")
         return
@@ -305,7 +297,7 @@ def test_mnnvl_init_and_run_distributed(ops):
     ws_bytes = ops.get_helix_workspace_size_per_rank(cp_size)
     gloo_group = dist.new_group(backend="gloo")
 
-    workspace, handle = allocate_helix_mnnvl_workspace(
+    workspace, handle = mod.allocate_helix_mnnvl_workspace(
         cp_rank=rank,
         cp_size=cp_size,
         ws_bytes_per_rank=ws_bytes,
@@ -345,13 +337,9 @@ def test_mnnvl_data_exchange_distributed(ops):
     world_size = dist.get_world_size()
     cp_size = world_size
 
-    sys.path.insert(0, str(REPO_ROOT))
-    from vllm.distributed.helix_mnnvl_workspace import (
-        allocate_helix_mnnvl_workspace,
-        is_flashinfer_mnnvl_available,
-    )
+    mod = _load_mnnvl_workspace_module()
 
-    if not is_flashinfer_mnnvl_available():
+    if not mod.is_flashinfer_mnnvl_available():
         if rank == 0:
             print("SKIP: test_mnnvl_data_exchange_distributed — FlashInfer MNNVL not available")
         return
@@ -359,7 +347,7 @@ def test_mnnvl_data_exchange_distributed(ops):
     ws_bytes = ops.get_helix_workspace_size_per_rank(cp_size)
     gloo_group = dist.new_group(backend="gloo")
 
-    workspace, handle = allocate_helix_mnnvl_workspace(
+    workspace, handle = mod.allocate_helix_mnnvl_workspace(
         cp_rank=rank,
         cp_size=cp_size,
         ws_bytes_per_rank=ws_bytes,
