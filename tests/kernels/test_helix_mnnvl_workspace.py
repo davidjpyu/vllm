@@ -20,6 +20,7 @@ Requirements: PyTorch with CUDA 12.0+, SM90+ GPU.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import sys
 import time
@@ -29,6 +30,23 @@ from typing import Any
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+_mnnvl_ws_module = None
+
+
+def _load_mnnvl_workspace_module():
+    """Load helix_mnnvl_workspace.py directly, bypassing vllm.distributed.__init__."""
+    global _mnnvl_ws_module
+    if _mnnvl_ws_module is not None:
+        return _mnnvl_ws_module
+    mod_path = REPO_ROOT / "vllm" / "distributed" / "helix_mnnvl_workspace.py"
+    spec = importlib.util.spec_from_file_location(
+        "helix_mnnvl_workspace", str(mod_path)
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    _mnnvl_ws_module = mod
+    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +131,7 @@ class _JitOpsAdapter:
 
 def test_should_use_mnnvl_env_off(ops):
     """VLLM_HELIX_USE_MNNVL=0 → always returns False."""
-    sys.path.insert(0, str(REPO_ROOT))
-    from vllm.distributed.helix_mnnvl_workspace import should_use_mnnvl
+    should_use_mnnvl = _load_mnnvl_workspace_module().should_use_mnnvl
 
     old = os.environ.get("VLLM_HELIX_USE_MNNVL")
     try:
@@ -130,8 +147,7 @@ def test_should_use_mnnvl_env_off(ops):
 
 def test_should_use_mnnvl_no_group(ops):
     """When cp_cpu_group is None, auto mode → always False."""
-    sys.path.insert(0, str(REPO_ROOT))
-    from vllm.distributed.helix_mnnvl_workspace import should_use_mnnvl
+    should_use_mnnvl = _load_mnnvl_workspace_module().should_use_mnnvl
 
     old = os.environ.get("VLLM_HELIX_USE_MNNVL")
     try:
@@ -145,8 +161,7 @@ def test_should_use_mnnvl_no_group(ops):
 
 def test_flashinfer_availability(ops):
     """is_flashinfer_mnnvl_available() returns bool without crashing."""
-    sys.path.insert(0, str(REPO_ROOT))
-    from vllm.distributed.helix_mnnvl_workspace import is_flashinfer_mnnvl_available
+    is_flashinfer_mnnvl_available = _load_mnnvl_workspace_module().is_flashinfer_mnnvl_available
 
     result = is_flashinfer_mnnvl_available()
     print(f"  FlashInfer MNNVL available: {result}")
@@ -177,8 +192,7 @@ def test_backward_compat_device_alloc(ops):
 
 def test_env_var_values(ops):
     """Various VLLM_HELIX_USE_MNNVL values are handled correctly."""
-    sys.path.insert(0, str(REPO_ROOT))
-    from vllm.distributed.helix_mnnvl_workspace import should_use_mnnvl
+    should_use_mnnvl = _load_mnnvl_workspace_module().should_use_mnnvl
 
     test_cases = [
         ("0", False),
