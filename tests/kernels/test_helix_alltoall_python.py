@@ -292,6 +292,146 @@ def test_variable_softmax_stats_width(ops):
 
 
 # ---------------------------------------------------------------------------
+# Multi-rank dual-stream tests (single GPU, concurrent kernels)
+# ---------------------------------------------------------------------------
+
+def _dual_stream_alltoall(ops, cp_size, N, D, timeout_s=30):
+    """Launch cp_size concurrent A2A kernels on separate streams, same GPU.
+
+    Each rank r fills its input with value (r + 1) so we can verify correct
+    routing after A2A.  All ranks share one contiguous workspace tensor.
+
+    Returns (list_of_po_out, list_of_ss_out) — one per rank.
+    """
+    ws_bytes = ops.get_helix_workspace_size_per_rank(cp_size)
+    ws_elems = (ws_bytes + 7) // 8
+    workspace = torch.zeros(cp_size, ws_elems, dtype=torch.long, device="cuda")
+    for r in range(cp_size):
+        ops.initialize_helix_workspace(workspace, r, cp_size)
+    torch.cuda.synchronize()
+
+    # Build per-rank inputs: rank r → value (r + 1)
+    po_inputs = []
+    ss_inputs = []
+    for r in range(cp_size):
+        po = torch.full(
+            (N, cp_size, D), fill_value=float(r + 1),
+            dtype=torch.bfloat16, device="cuda",
+        )
+        ss = torch.full(
+            (N, cp_size, 2), fill_value=float(r + 1) * 0.1,
+            dtype=torch.float32, device="cuda",
+        )
+        po_inputs.append(po)
+        ss_inputs.append(ss)
+
+    # Launch all ranks on separate streams
+    streams = [torch.cuda.Stream() for _ in range(cp_size)]
+    po_outs = [None] * cp_size
+    ss_outs = [None] * cp_size
+
+    for r in range(cp_size):
+        with torch.cuda.stream(streams[r]):
+            po_outs[r], ss_outs[r] = ops.alltoall_helix_native(
+                po_inputs[r], ss_inputs[r], workspace, r, cp_size
+            )
+
+    for s in streams:
+        s.synchronize()
+
+    return po_outs, ss_outs, po_inputs, ss_inputs
+
+
+def test_dual_stream_cp2_shapes(ops):
+    """cp_size=2 dual-stream: output shapes match inputs."""
+    D = 128
+    N = 8
+    po_outs, ss_outs, _, _ = _dual_stream_alltoall(ops, cp_size=2, N=N, D=D)
+
+    for r in range(2):
+        assert po_outs[r].shape == (N, 2, D), (
+            f"rank {r}: po shape {po_outs[r].shape}"
+        )
+        assert ss_outs[r].shape == (N, 2, 2), (
+            f"rank {r}: ss shape {ss_outs[r].shape}"
+        )
+        assert po_outs[r].dtype == torch.bfloat16
+        assert ss_outs[r].dtype == torch.float32
+
+    print("PASS: test_dual_stream_cp2_shapes")
+
+
+def test_dual_stream_cp2_correctness(ops):
+    """cp_size=2 dual-stream: verify data is correctly exchanged.
+
+    All-to-all semantics: rank r's slot s is sent to rank s.
+    After A2A, rank r's output slot s contains what rank s originally
+    had in its slot r.
+
+    rank 0 sends: slot[0]=1.0, slot[1]=1.0
+    rank 1 sends: slot[0]=2.0, slot[1]=2.0
+
+    rank 0 receives: slot[0]=1.0 (from rank 0 slot 0), slot[1]=2.0 (from rank 1 slot 0)
+    rank 1 receives: slot[0]=1.0 (from rank 0 slot 1), slot[1]=2.0 (from rank 1 slot 1)
+    """
+    D = 64
+    N = 4
+    po_outs, ss_outs, po_ins, _ = _dual_stream_alltoall(
+        ops, cp_size=2, N=N, D=D
+    )
+
+    # rank 0 output, slot 0: should be rank 0's data → value 1.0
+    r0_s0 = po_outs[0][:, 0, :].float()
+    expected_r0_s0 = po_ins[0][:, 0, :].float()  # rank 0 slot 0 → rank 0
+    match_r0_s0 = torch.allclose(r0_s0, expected_r0_s0, atol=1e-2)
+
+    # rank 0 output, slot 1: should be rank 1's data → value 2.0
+    r0_s1 = po_outs[0][:, 1, :].float()
+    expected_r0_s1 = po_ins[1][:, 0, :].float()  # rank 1 slot 0 → rank 0
+    match_r0_s1 = torch.allclose(r0_s1, expected_r0_s1, atol=1e-2)
+
+    # rank 1 output, slot 0: should be rank 0's data → value 1.0
+    r1_s0 = po_outs[1][:, 0, :].float()
+    expected_r1_s0 = po_ins[0][:, 1, :].float()  # rank 0 slot 1 → rank 1
+    match_r1_s0 = torch.allclose(r1_s0, expected_r1_s0, atol=1e-2)
+
+    # rank 1 output, slot 1: should be rank 1's data → value 2.0
+    r1_s1 = po_outs[1][:, 1, :].float()
+    expected_r1_s1 = po_ins[1][:, 1, :].float()  # rank 1 slot 1 → rank 1
+    match_r1_s1 = torch.allclose(r1_s1, expected_r1_s1, atol=1e-2)
+
+    all_match = match_r0_s0 and match_r0_s1 and match_r1_s0 and match_r1_s1
+
+    if all_match:
+        print("PASS: test_dual_stream_cp2_correctness (data routed correctly)")
+    else:
+        print(f"  rank 0 slot 0: match={match_r0_s0} "
+              f"(got mean={r0_s0.mean():.3f}, expected={expected_r0_s0.mean():.3f})")
+        print(f"  rank 0 slot 1: match={match_r0_s1} "
+              f"(got mean={r0_s1.mean():.3f}, expected={expected_r0_s1.mean():.3f})")
+        print(f"  rank 1 slot 0: match={match_r1_s0} "
+              f"(got mean={r1_s0.mean():.3f}, expected={expected_r1_s0.mean():.3f})")
+        print(f"  rank 1 slot 1: match={match_r1_s1} "
+              f"(got mean={r1_s1.mean():.3f}, expected={expected_r1_s1.mean():.3f})")
+        assert all_match, "Data routing mismatch — see above"
+
+
+def test_dual_stream_cp4_shapes(ops):
+    """cp_size=4 dual-stream: all four ranks run concurrently."""
+    D = 128
+    N = 4
+    po_outs, ss_outs, _, _ = _dual_stream_alltoall(ops, cp_size=4, N=N, D=D)
+
+    for r in range(4):
+        assert po_outs[r].shape == (N, 4, D), (
+            f"rank {r}: po shape {po_outs[r].shape}"
+        )
+        assert ss_outs[r].shape == (N, 4, 2)
+
+    print("PASS: test_dual_stream_cp4_shapes")
+
+
+# ---------------------------------------------------------------------------
 
 ALL_TESTS = {
     "ws": test_workspace_size_via_python,
@@ -303,6 +443,9 @@ ALL_TESTS = {
     "multi_cp": test_multiple_cp_sizes_workspace,
     "reuse": test_workspace_reuse,
     "var_ss": test_variable_softmax_stats_width,
+    "dual_cp2": test_dual_stream_cp2_shapes,
+    "dual_cp2_data": test_dual_stream_cp2_correctness,
+    "dual_cp4": test_dual_stream_cp4_shapes,
 }
 
 
@@ -312,8 +455,8 @@ def main():
     )
     parser.add_argument(
         "--test",
-        choices=list(ALL_TESTS.keys()),
-        help="Run a single test (default: all)",
+        help="Run a single test (default: all). "
+             "Available: " + ", ".join(ALL_TESTS.keys()),
     )
     parser.add_argument(
         "--use-built",
@@ -330,7 +473,14 @@ def main():
         ext = load_jit_extension()
         ops = _JitOpsAdapter(ext)
 
-    tests = {args.test: ALL_TESTS[args.test]} if args.test else ALL_TESTS
+    if args.test:
+        if args.test not in ALL_TESTS:
+            print(f"Unknown test: {args.test}")
+            print(f"Available: {', '.join(ALL_TESTS.keys())}")
+            sys.exit(1)
+        tests = {args.test: ALL_TESTS[args.test]}
+    else:
+        tests = ALL_TESTS
     passed, failed = 0, 0
     for name, fn in tests.items():
         print(f"\n--- {name} ---")
