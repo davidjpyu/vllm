@@ -223,7 +223,9 @@ def allocate_helix_mnnvl_workspace(
         ws_bytes_per_rank: Workspace size in bytes per rank (from C++).
         cp_cpu_group: **CPU** ProcessGroup for the CP ranks.  Must be a
             non-NCCL group so that ``allgather`` of fabric handles works.
-        gpus_per_node: GPUs per physical node (default: ``torch.cuda.device_count()``).
+        gpus_per_node: Ranks per physical node.  Defaults to
+            ``LOCAL_WORLD_SIZE`` (set by ``torchrun``) or
+            ``torch.cuda.device_count()`` if not available.
 
     Returns:
         ``(workspace_tensor, mnnvl_handle)`` — the tensor has shape
@@ -240,7 +242,11 @@ def allocate_helix_mnnvl_workspace(
         )
 
     if gpus_per_node is None:
-        gpus_per_node = torch.cuda.device_count()
+        local_ws = os.environ.get("LOCAL_WORLD_SIZE")
+        if local_ws is not None:
+            gpus_per_node = int(local_ws)
+        else:
+            gpus_per_node = torch.cuda.device_count()
 
     return _allocate_via_flashinfer(
         cp_rank, cp_size, ws_bytes_per_rank, cp_cpu_group, gpus_per_node
