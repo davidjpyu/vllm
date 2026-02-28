@@ -55,6 +55,23 @@ def _ensure_writable_cache():
             continue
 
 
+def _get_cuda_gencode_flags():
+    """Return NVCC gencode flags matching the current GPU architecture.
+
+    Hopper (H100/H200) -> sm_90a, Blackwell (B200/GB200) -> sm_100a.
+    """
+    major, minor = torch.cuda.get_device_capability()
+    if major >= 9:
+        arch = f"compute_{major}0a"
+        code = f"sm_{major}0a"
+    else:
+        arch = f"compute_{major}{minor}"
+        code = f"sm_{major}{minor}"
+    flag = f"-gencode=arch={arch},code={code}"
+    print(f"[JIT] GPU SM{major}.{minor} -> {flag}")
+    return [flag]
+
+
 def load_jit_extension():
     _ensure_writable_cache()
     from torch.utils.cpp_extension import load
@@ -72,7 +89,7 @@ def load_jit_extension():
         extra_include_paths=[str(src_dir)],
         extra_cuda_cflags=[
             "-O3", "--use_fast_math",
-            "-gencode=arch=compute_90a,code=sm_90a",
+            *_get_cuda_gencode_flags(),
         ],
         extra_cflags=["-O3"],
         verbose=True,

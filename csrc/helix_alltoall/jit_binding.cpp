@@ -15,7 +15,8 @@
  *       ],
  *       extra_include_paths=["csrc/helix_alltoall"],
  *       extra_cuda_cflags=["-O3", "--use_fast_math",
- *                          "-gencode=arch=compute_90a,code=sm_90a"],
+ *                          "-gencode=arch=compute_<CC>a,code=sm_<CC>a"],
+ *       // where <CC> = 90 for Hopper (H100/H200), 100 for Blackwell (GB200)
  *       extra_cflags=["-O3"],
  *       verbose=True,
  *   )

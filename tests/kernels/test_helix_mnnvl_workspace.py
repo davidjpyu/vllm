@@ -1,5 +1,5 @@
 """
-Phase 3 tests for the Helix MNNVL workspace allocation.
+Phase 3 tests for the Helix MNNVL workspace allocation (Strategy B).
 
 Two groups of tests:
 
@@ -10,11 +10,12 @@ a CP group, and availability checks.  Run on a single GPU::
     python tests/kernels/test_helix_mnnvl_workspace.py
 
 **B. Multi-GPU MNNVL allocation tests** — actually allocate MNNVL
-workspace across ranks.  Requires >= 2 GPUs and ``torchrun``::
+workspace across ranks using the CUDA driver API.  Requires >= 2 GPUs
+and ``torchrun``::
 
     torchrun --nproc_per_node=2 tests/kernels/test_helix_mnnvl_workspace.py --distributed
 
-Requirements: PyTorch with CUDA 12.0+, SM90+ GPU.
+Requirements: PyTorch with CUDA 12.0+, SM90+ GPU, cuda-python.
 """
 
 from __future__ import annotations
@@ -70,6 +71,23 @@ def _ensure_writable_cache():
             continue
 
 
+def _get_cuda_gencode_flags():
+    """Return NVCC gencode flags matching the current GPU architecture.
+
+    Hopper (H100/H200) -> sm_90a, Blackwell (B200/GB200) -> sm_100a.
+    """
+    major, minor = torch.cuda.get_device_capability()
+    if major >= 9:
+        arch = f"compute_{major}0a"
+        code = f"sm_{major}0a"
+    else:
+        arch = f"compute_{major}{minor}"
+        code = f"sm_{major}{minor}"
+    flag = f"-gencode=arch={arch},code={code}"
+    print(f"[JIT] GPU SM{major}.{minor} -> {flag}")
+    return [flag]
+
+
 def load_jit_extension():
     _ensure_writable_cache()
     from torch.utils.cpp_extension import load
@@ -88,7 +106,7 @@ def load_jit_extension():
         extra_cuda_cflags=[
             "-O3",
             "--use_fast_math",
-            "-gencode=arch=compute_90a,code=sm_90a",
+            *_get_cuda_gencode_flags(),
         ],
         extra_cflags=["-O3"],
         verbose=True,
@@ -159,14 +177,14 @@ def test_should_use_mnnvl_no_group(ops):
             os.environ["VLLM_HELIX_USE_MNNVL"] = old
 
 
-def test_flashinfer_availability(ops):
-    """is_flashinfer_mnnvl_available() returns bool without crashing."""
-    is_flashinfer_mnnvl_available = _load_mnnvl_workspace_module().is_flashinfer_mnnvl_available
+def test_cuda_driver_availability(ops):
+    """is_cuda_driver_available() returns bool without crashing."""
+    is_cuda_driver_available = _load_mnnvl_workspace_module().is_cuda_driver_available
 
-    result = is_flashinfer_mnnvl_available()
-    print(f"  FlashInfer MNNVL available: {result}")
+    result = is_cuda_driver_available()
+    print(f"  cuda-python driver available: {result}")
     assert isinstance(result, bool)
-    print("PASS: test_flashinfer_availability")
+    print("PASS: test_cuda_driver_availability")
 
 
 def test_backward_compat_device_alloc(ops):
@@ -250,9 +268,9 @@ def test_mnnvl_allocation_distributed(ops):
 
     mod = _load_mnnvl_workspace_module()
 
-    if not mod.is_flashinfer_mnnvl_available():
+    if not mod.is_cuda_driver_available():
         if rank == 0:
-            print("SKIP: test_mnnvl_allocation_distributed — FlashInfer MNNVL not available")
+            print("SKIP: test_mnnvl_allocation_distributed — cuda-python not available")
         return
 
     ws_bytes = ops.get_helix_workspace_size_per_rank(cp_size)
@@ -289,9 +307,9 @@ def test_mnnvl_init_and_run_distributed(ops):
 
     mod = _load_mnnvl_workspace_module()
 
-    if not mod.is_flashinfer_mnnvl_available():
+    if not mod.is_cuda_driver_available():
         if rank == 0:
-            print("SKIP: test_mnnvl_init_and_run_distributed — FlashInfer MNNVL not available")
+            print("SKIP: test_mnnvl_init_and_run_distributed — cuda-python not available")
         return
 
     ws_bytes = ops.get_helix_workspace_size_per_rank(cp_size)
@@ -339,9 +357,9 @@ def test_mnnvl_data_exchange_distributed(ops):
 
     mod = _load_mnnvl_workspace_module()
 
-    if not mod.is_flashinfer_mnnvl_available():
+    if not mod.is_cuda_driver_available():
         if rank == 0:
-            print("SKIP: test_mnnvl_data_exchange_distributed — FlashInfer MNNVL not available")
+            print("SKIP: test_mnnvl_data_exchange_distributed — cuda-python not available")
         return
 
     ws_bytes = ops.get_helix_workspace_size_per_rank(cp_size)
@@ -389,7 +407,7 @@ def test_mnnvl_data_exchange_distributed(ops):
 SINGLE_GPU_TESTS = {
     "env_off": test_should_use_mnnvl_env_off,
     "no_group": test_should_use_mnnvl_no_group,
-    "availability": test_flashinfer_availability,
+    "availability": test_cuda_driver_availability,
     "backward_compat": test_backward_compat_device_alloc,
     "env_values": test_env_var_values,
     "multi_cp": test_device_alloc_multiple_cp,

@@ -8,7 +8,9 @@ Mirrors TRT-LLM's HelixAllToAllNative pattern:
   - Provides run() to execute the native A2A and return output tensors
 
 Phase 2: single-node — plain CUDA device tensor.
-Phase 3: multi-node — MNNVL workspace via FlashInfer (when available).
+Phase 3: multi-node — MNNVL workspace via CUDA driver API (Strategy B).
+  On aarch64 (GB200): CU_MEM_HANDLE_TYPE_FABRIC — true cross-node.
+  On x86_64 (H200):   CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR — intra-node.
 """
 
 from __future__ import annotations
