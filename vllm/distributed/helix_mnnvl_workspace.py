@@ -80,13 +80,35 @@ def is_cuda_driver_available() -> bool:
     return _get_cuda_driver() is not None
 
 
-def _check_cu_result(cu_func_ret):
+def _check_cu_result(cu_func_ret, context: str = ""):
     """Unwrap a CUDA driver API return tuple and raise on error."""
     cuda = _get_cuda_driver()
+
+    def _raise(cu_result):
+        try:
+            name = cu_result.name
+        except AttributeError:
+            name = str(cu_result)
+        hint = ""
+        val = int(cu_result) if hasattr(cu_result, '__int__') else -1
+        if val == 800:
+            hint = (
+                " (CUDA_ERROR_NOT_PERMITTED — is nvidia-fabricmanager / "
+                "IMEX daemon running? Does the container have access to "
+                "/dev/nvidia-caps-imex-channels?)"
+            )
+        elif val == 801:
+            hint = (
+                " (CUDA_ERROR_NOT_SUPPORTED — fabric handles may not be "
+                "supported on this GPU/driver)"
+            )
+        ctx = f" in {context}" if context else ""
+        raise RuntimeError(f"CUDA driver API error: {name}{ctx}{hint}")
+
     if isinstance(cu_func_ret, tuple):
         cu_result, *others = cu_func_ret
         if cu_result != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError(f"CUDA driver API error: {cu_result}")
+            _raise(cu_result)
         if len(others) == 1:
             return others[0]
         elif len(others) > 1:
@@ -94,7 +116,7 @@ def _check_cu_result(cu_func_ret):
         return None
     else:
         if cu_func_ret != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError(f"CUDA driver API error: {cu_func_ret}")
+            _raise(cu_func_ret)
         return None
 
 
@@ -426,7 +448,8 @@ def _allocate_mnnvl_memory(
     address_size = rank_stride * cp_size
 
     base_ptr = _check_cu_result(
-        cuda.cuMemAddressReserve(address_size, FABRIC_PAGE_SIZE, 0, 0)
+        cuda.cuMemAddressReserve(address_size, FABRIC_PAGE_SIZE, 0, 0),
+        "cuMemAddressReserve",
     )
     base_ptr_int = int(base_ptr)
 
@@ -443,14 +466,16 @@ def _allocate_mnnvl_memory(
     # Allocate local physical memory
     prop = _get_allocation_prop(dev_id)
     local_handle = _check_cu_result(
-        cuda.cuMemCreate(aligned_size, prop, flags=0)
+        cuda.cuMemCreate(aligned_size, prop, flags=0),
+        "cuMemCreate",
     )
 
     # Export local handle
     exported = _check_cu_result(
         cuda.cuMemExportToShareableHandle(
             local_handle, prop.requestedHandleTypes, 0
-        )
+        ),
+        "cuMemExportToShareableHandle",
     )
 
     # Allgather handles across ranks
