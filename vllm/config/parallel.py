@@ -272,6 +272,31 @@ class ParallelConfig:
     Block_size should be divisible by cp_kv_cache_interleave_size.
     """
 
+    helix_mode: bool = False
+    """Enable Helix parallelism for decode. When enabled, uses All-to-All
+    communication instead of AllGather+ReduceScatter for context parallel
+    attention. Requires decode_context_parallel_size > 1. The DCP group
+    becomes the KVP (KV parallel) group in Helix terminology.
+
+    For GQA models, Helix splits attention heads into TPA groups where each
+    group processes different head shards but the same KV cache shard.
+    For MLA models (TPA=1), Helix uses All-to-All + LSE reduction.
+
+    Reference: https://arxiv.org/abs/2507.07120
+    """
+
+    helix_a2a_backend: Literal["nccl", "trtllm_native"] = "nccl"
+    """Backend for Helix all-to-all communication.
+
+    - "nccl": Uses dist.all_to_all_single via NCCL (default, existing path).
+    - "trtllm_native": Uses the custom TRT-LLM-ported native CUDA kernel
+      (LL128 + FIFO pipelining). Requires the native helix alltoall ops
+      to be compiled (ENABLE_HELIX_ALLTOALL). Uses MNNVL workspace for
+      multi-node deployments on aarch64 (GB200).
+
+    Only effective when helix_mode is True.
+    """
+
     data_parallel_index: int = Field(init=False)
     """Equal to the data parallel rank but not used for torch process groups
     and not overridden for dense models."""
@@ -355,7 +380,38 @@ class ParallelConfig:
                 f"dcp_size={self.decode_context_parallel_size}."
             )
 
+        if self.helix_mode:
+            if self.decode_context_parallel_size <= 1:
+                raise ValueError(
+                    "helix_mode requires decode_context_parallel_size > 1"
+                )
+            if self.tensor_parallel_size % self.decode_context_parallel_size != 0:
+                raise ValueError(
+                    f"tensor_parallel_size ({self.tensor_parallel_size}) must "
+                    f"be divisible by decode_context_parallel_size "
+                    f"({self.decode_context_parallel_size}) when helix_mode "
+                    f"is enabled"
+                )
+
+        if self.helix_a2a_backend == "trtllm_native" and not self.helix_mode:
+            raise ValueError(
+                "helix_a2a_backend='trtllm_native' requires helix_mode=True"
+            )
+
         return self
+
+    @property
+    def helix_kvp_size(self) -> int:
+        """KVP (KV parallel) size for Helix. Reuses DCP when Helix is enabled."""
+        return self.decode_context_parallel_size if self.helix_mode else 1
+
+    @property
+    def helix_tpa_size(self) -> int:
+        """TPA (tensor parallel for attention) size for Helix.
+        Derived as TP / KVP when Helix is enabled."""
+        if self.helix_mode:
+            return self.tensor_parallel_size // self.decode_context_parallel_size
+        return self.tensor_parallel_size
 
     @property
     def world_size_across_dp(self) -> int:
