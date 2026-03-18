@@ -306,6 +306,27 @@ class ParallelConfig:
     Block_size should be divisible by cp_kv_cache_interleave_size.
     """
 
+    helix_mode: bool = False
+    """Enable Helix parallelism for decode. When enabled, uses All-to-All
+    communication instead of AllGather+ReduceScatter for context parallel
+    attention. Requires decode_context_parallel_size > 1. The DCP group
+    becomes the KVP (KV parallel) group in Helix terminology.
+
+    Reference: https://arxiv.org/abs/2507.07120
+    """
+
+    helix_a2a_backend: Literal["nccl", "flashinfer_native"] = "nccl"
+    """Backend for Helix all-to-all communication.
+
+    - "nccl": Uses dist.all_to_all_single via NCCL (default, existing path).
+    - "flashinfer_native": Uses FlashInfer's Helix LL128 FIFO-based all-to-all
+      kernel. Requires SM90+ (Hopper/Blackwell). Uses MNNVL workspace for
+      multi-node deployments. No build-system changes needed — FlashInfer
+      handles JIT compilation.
+
+    Only effective when helix_mode is True.
+    """
+
     data_parallel_index: int = Field(init=False)
     """Equal to the data parallel rank but not used for torch process groups
     and not overridden for dense models."""
@@ -401,7 +422,32 @@ class ParallelConfig:
                 "dcp_comm_backend='a2a' requires decode_context_parallel_size > 1."
             )
 
+        if self.helix_mode:
+            if self.decode_context_parallel_size <= 1:
+                raise ValueError(
+                    "helix_mode requires decode_context_parallel_size > 1"
+                )
+
+        if self.helix_a2a_backend == "flashinfer_native" and not self.helix_mode:
+            raise ValueError(
+                "helix_a2a_backend='flashinfer_native' requires helix_mode=True"
+            )
+
         return self
+
+    @property
+    def helix_kvp_size(self) -> int:
+        """KVP (KV parallel) size for Helix. Reuses DCP when Helix is enabled."""
+        return self.decode_context_parallel_size if self.helix_mode else 1
+
+    @property
+    def helix_tpa_size(self) -> int:
+        """TPA (tensor parallel for attention) size for Helix.
+        Derived as TP / KVP when Helix is enabled."""
+        if self.helix_mode:
+            return (self.tensor_parallel_size
+                    // self.decode_context_parallel_size)
+        return self.tensor_parallel_size
 
     @property
     def world_size_across_dp(self) -> int:
