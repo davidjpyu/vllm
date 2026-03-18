@@ -102,12 +102,12 @@ class TestHelixConfig:
     def test_helix_kvp_tpa_properties(self):
         from vllm.config.parallel import ParallelConfig
         cfg = ParallelConfig(
-            tensor_parallel_size=16,
-            decode_context_parallel_size=4,
+            tensor_parallel_size=4,
+            decode_context_parallel_size=2,
             helix_mode=True,
         )
-        assert cfg.helix_kvp_size == 4
-        assert cfg.helix_tpa_size == 4
+        assert cfg.helix_kvp_size == 2
+        assert cfg.helix_tpa_size == 2
 
     def test_helix_disabled_properties(self):
         from vllm.config.parallel import ParallelConfig
