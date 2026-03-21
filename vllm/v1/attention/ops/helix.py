@@ -456,6 +456,7 @@ def helix_alltoall_lse_reduce(
     local_output: torch.Tensor,
     local_lse: torch.Tensor,
     kvp_group: GroupCoordinator,
+    ctx: object = None,
     return_lse: bool = False,
     is_lse_base_on_e: bool = True,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:

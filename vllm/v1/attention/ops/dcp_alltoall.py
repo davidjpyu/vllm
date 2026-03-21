@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import os
+
 import torch
 import torch.distributed as dist
 
@@ -314,6 +316,14 @@ def dcp_a2a_lse_reduce(
         Combined output [B, H/N, D] (head-scattered)
         If return_lse=True, also returns global_lse [B, H/N]
     """
+    if os.environ.get("VLLM_HELIX_A2A_BACKEND") == "flashinfer_native":
+        from vllm.v1.attention.ops.helix import helix_alltoall_lse_reduce
+        return helix_alltoall_lse_reduce(
+            cp_attn_out, cp_attn_lse, cp_group,
+            ctx=ctx, return_lse=return_lse,
+            is_lse_base_on_e=is_lse_base_on_e,
+        )
+
     world_size = cp_group.world_size
 
     if world_size == 1:
