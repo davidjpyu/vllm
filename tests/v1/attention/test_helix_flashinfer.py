@@ -36,14 +36,19 @@ def _sm90_available() -> bool:
 
 def _flashinfer_helix_available() -> bool:
     try:
-        from flashinfer.comm import (
+        if not _sm90_available():
+            return False
+        # FlashInfer's comm module needs CUDA runtime loaded at import time
+        import torch
+        torch.cuda.init()
+        from flashinfer.comm import (  # noqa: F401
             helix_a2a_alltoall,
             helix_a2a_allocate_workspace,
             helix_a2a_init_workspace,
             helix_a2a_workspace_size,
         )
-        return _sm90_available()
-    except ImportError:
+        return True
+    except (ImportError, Exception):
         return False
 
 
