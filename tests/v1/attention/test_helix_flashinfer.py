@@ -71,12 +71,22 @@ requires_flashinfer_helix = pytest.mark.skipif(
 # ============================================================================
 
 
+def _mock_gpu_count(n=4):
+    """Context manager to mock GPU count for ParallelConfig validation."""
+    from unittest.mock import patch
+    return patch(
+        "vllm.config.parallel.cuda_device_count_stateless",
+        return_value=n,
+    )
+
+
 class TestHelixConfig:
     """Verify helix_mode and helix_a2a_backend config validation."""
 
     def test_helix_mode_requires_dcp_gt_1(self):
         from vllm.config.parallel import ParallelConfig
-        with pytest.raises((ValueError, Exception), match="helix_mode requires"):
+        with _mock_gpu_count(4), \
+             pytest.raises((ValueError, Exception), match="helix_mode requires"):
             ParallelConfig(
                 tensor_parallel_size=4,
                 decode_context_parallel_size=1,
@@ -85,7 +95,8 @@ class TestHelixConfig:
 
     def test_flashinfer_native_requires_helix_mode(self):
         from vllm.config.parallel import ParallelConfig
-        with pytest.raises((ValueError, Exception), match="requires helix_mode"):
+        with _mock_gpu_count(4), \
+             pytest.raises((ValueError, Exception), match="requires helix_mode"):
             ParallelConfig(
                 tensor_parallel_size=4,
                 decode_context_parallel_size=4,
@@ -95,12 +106,13 @@ class TestHelixConfig:
 
     def test_valid_helix_config(self):
         from vllm.config.parallel import ParallelConfig
-        cfg = ParallelConfig(
-            tensor_parallel_size=4,
-            decode_context_parallel_size=4,
-            helix_mode=True,
-            helix_a2a_backend="flashinfer_native",
-        )
+        with _mock_gpu_count(4):
+            cfg = ParallelConfig(
+                tensor_parallel_size=4,
+                decode_context_parallel_size=4,
+                helix_mode=True,
+                helix_a2a_backend="flashinfer_native",
+            )
         assert cfg.helix_mode is True
         assert cfg.helix_a2a_backend == "flashinfer_native"
         assert cfg.helix_kvp_size == 4
@@ -108,21 +120,23 @@ class TestHelixConfig:
 
     def test_helix_kvp_tpa_properties(self):
         from vllm.config.parallel import ParallelConfig
-        cfg = ParallelConfig(
-            tensor_parallel_size=4,
-            decode_context_parallel_size=2,
-            helix_mode=True,
-        )
+        with _mock_gpu_count(4):
+            cfg = ParallelConfig(
+                tensor_parallel_size=4,
+                decode_context_parallel_size=2,
+                helix_mode=True,
+            )
         assert cfg.helix_kvp_size == 2
         assert cfg.helix_tpa_size == 2
 
     def test_helix_disabled_properties(self):
         from vllm.config.parallel import ParallelConfig
-        cfg = ParallelConfig(
-            tensor_parallel_size=4,
-            decode_context_parallel_size=1,
-            helix_mode=False,
-        )
+        with _mock_gpu_count(4):
+            cfg = ParallelConfig(
+                tensor_parallel_size=4,
+                decode_context_parallel_size=1,
+                helix_mode=False,
+            )
         assert cfg.helix_kvp_size == 1
         assert cfg.helix_tpa_size == 4
 
@@ -476,16 +490,17 @@ class TestHelixPreInit:
 
     def test_pre_init_skips_when_helix_disabled(self):
         """Pre-init should be a no-op when helix_mode is False."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
         from vllm.config.parallel import ParallelConfig
 
         # Create a mock worker with helix_mode=False
         worker = MagicMock()
-        worker.parallel_config = ParallelConfig(
-            tensor_parallel_size=4,
-            decode_context_parallel_size=1,
-            helix_mode=False,
-        )
+        with _mock_gpu_count(4):
+            worker.parallel_config = ParallelConfig(
+                tensor_parallel_size=4,
+                decode_context_parallel_size=1,
+                helix_mode=False,
+            )
 
         # Import the method and call it on our mock
         from vllm.v1.worker.gpu_worker import Worker
@@ -499,12 +514,13 @@ class TestHelixPreInit:
         from vllm.config.parallel import ParallelConfig
 
         worker = MagicMock()
-        worker.parallel_config = ParallelConfig(
-            tensor_parallel_size=4,
-            decode_context_parallel_size=4,
-            helix_mode=True,
-            helix_a2a_backend="nccl",
-        )
+        with _mock_gpu_count(4):
+            worker.parallel_config = ParallelConfig(
+                tensor_parallel_size=4,
+                decode_context_parallel_size=4,
+                helix_mode=True,
+                helix_a2a_backend="nccl",
+            )
 
         from vllm.v1.worker.gpu_worker import Worker
         Worker._helix_a2a_pre_init(worker)
