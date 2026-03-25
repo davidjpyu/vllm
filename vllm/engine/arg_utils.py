@@ -423,6 +423,8 @@ class EngineArgs:
     tensor_parallel_size_attention: int | None = (
         ParallelConfig.tensor_parallel_size_attention
     )
+    helix_mode: bool = ParallelConfig.helix_mode
+    helix_a2a_backend: str = ParallelConfig.helix_a2a_backend
     dcp_kv_cache_interleave_size: int = ParallelConfig.dcp_kv_cache_interleave_size
     cp_kv_cache_interleave_size: int = ParallelConfig.cp_kv_cache_interleave_size
     data_parallel_size: int = ParallelConfig.data_parallel_size
@@ -880,6 +882,12 @@ class EngineArgs:
             "--tensor-parallel-size-attention",
             "-tpa",
             **parallel_kwargs["tensor_parallel_size_attention"],
+            "--helix-mode",
+            **parallel_kwargs["helix_mode"],
+        )
+        parallel_group.add_argument(
+            "--helix-a2a-backend",
+            **parallel_kwargs["helix_a2a_backend"],
         )
         parallel_group.add_argument(
             "--dcp-kv-cache-interleave-size",
@@ -1831,6 +1839,8 @@ class EngineArgs:
             decode_context_parallel_size=self.decode_context_parallel_size,
             dcp_comm_backend=self.dcp_comm_backend,
             tensor_parallel_size_attention=self.tensor_parallel_size_attention,
+            helix_mode=self.helix_mode,
+            helix_a2a_backend=self.helix_a2a_backend,
             dcp_kv_cache_interleave_size=self.dcp_kv_cache_interleave_size,
             cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
             _api_process_count=self._api_process_count,

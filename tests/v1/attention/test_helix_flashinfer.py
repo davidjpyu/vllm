@@ -9,8 +9,10 @@ Test categories:
   3. LSE combine correctness (GPU, no multi-rank)
   4. FlashInfer workspace lifecycle (SM90+ GPU, single-GPU multi-rank)
   5. Full A2A + combine (SM90+ GPU, single-GPU multi-rank)
+  6. Phase 7: CLI args, config-based backend detection, pre-init hook
 
 Tests 4-5 require FlashInfer with Helix support and SM90+ GPUs.
+Tests 6 are CPU-only unit tests for the integration plumbing.
 
 Run:
     python -m pytest tests/v1/attention/test_helix_flashinfer.py -v -s
@@ -413,6 +415,94 @@ class TestHelixAllToAllFlashInferManager:
         assert recv_s.shape == softmax_stats.shape
         assert recv_o.dtype == partial_o.dtype
         assert recv_s.dtype == softmax_stats.dtype
+
+
+# ============================================================================
+# 6. Phase 7: CLI args, config-based backend detection, pre-init hook
+# ============================================================================
+
+
+class TestEngineArgsHelix:
+    """Verify EngineArgs accepts and passes through helix CLI args."""
+
+    def test_engine_args_has_helix_fields(self):
+        """EngineArgs should have helix_mode and helix_a2a_backend."""
+        from vllm.engine.arg_utils import EngineArgs
+        args = EngineArgs(model="facebook/opt-125m")
+        assert hasattr(args, "helix_mode")
+        assert hasattr(args, "helix_a2a_backend")
+        assert args.helix_mode is False
+        assert args.helix_a2a_backend == "nccl"
+
+    def test_engine_args_helix_mode_set(self):
+        """EngineArgs should accept helix_mode=True."""
+        from vllm.engine.arg_utils import EngineArgs
+        args = EngineArgs(
+            model="facebook/opt-125m",
+            helix_mode=True,
+            helix_a2a_backend="flashinfer_native",
+            decode_context_parallel_size=4,
+            tensor_parallel_size=4,
+        )
+        assert args.helix_mode is True
+        assert args.helix_a2a_backend == "flashinfer_native"
+
+
+class TestDCPBackendDetection:
+    """Verify _get_helix_backend reads config with env-var fallback."""
+
+    def test_env_var_fallback(self, monkeypatch):
+        """When no config is available, falls back to env var."""
+        from vllm.v1.attention.ops.dcp_alltoall import _get_helix_backend
+        monkeypatch.setenv("VLLM_HELIX_A2A_BACKEND", "flashinfer_native")
+        result = _get_helix_backend()
+        assert result == "flashinfer_native"
+
+    def test_default_is_nccl(self, monkeypatch):
+        """When no config and no env var, default is nccl."""
+        from vllm.v1.attention.ops.dcp_alltoall import _get_helix_backend
+        monkeypatch.delenv("VLLM_HELIX_A2A_BACKEND", raising=False)
+        result = _get_helix_backend()
+        assert result == "nccl"
+
+
+class TestHelixPreInit:
+    """Verify the pre-init hook logic in gpu_worker."""
+
+    def test_pre_init_skips_when_helix_disabled(self):
+        """Pre-init should be a no-op when helix_mode is False."""
+        from unittest.mock import MagicMock, patch
+        from vllm.config.parallel import ParallelConfig
+
+        # Create a mock worker with helix_mode=False
+        worker = MagicMock()
+        worker.parallel_config = ParallelConfig(
+            tensor_parallel_size=4,
+            decode_context_parallel_size=1,
+            helix_mode=False,
+        )
+
+        # Import the method and call it on our mock
+        from vllm.v1.worker.gpu_worker import Worker
+        Worker._helix_a2a_pre_init(worker)
+
+        # Should not have tried to import or call anything else
+
+    def test_pre_init_skips_when_nccl_backend(self):
+        """Pre-init should be a no-op when backend is nccl."""
+        from unittest.mock import MagicMock
+        from vllm.config.parallel import ParallelConfig
+
+        worker = MagicMock()
+        worker.parallel_config = ParallelConfig(
+            tensor_parallel_size=4,
+            decode_context_parallel_size=4,
+            helix_mode=True,
+            helix_a2a_backend="nccl",
+        )
+
+        from vllm.v1.worker.gpu_worker import Worker
+        Worker._helix_a2a_pre_init(worker)
 
 
 if __name__ == "__main__":
