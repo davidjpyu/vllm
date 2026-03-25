@@ -22,9 +22,8 @@ Reference: https://arxiv.org/abs/2507.07120
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import os
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -281,6 +280,18 @@ def dcp_lse_combine_triton(
     return out
 
 
+def _get_helix_backend() -> str:
+    """Return the Helix A2A backend from config, with env-var fallback."""
+    try:
+        from vllm.config import get_current_vllm_config
+        cfg = get_current_vllm_config().parallel_config
+        if cfg.helix_mode:
+            return cfg.helix_a2a_backend
+    except Exception:
+        pass
+    return os.environ.get("VLLM_HELIX_A2A_BACKEND", "nccl")
+
+
 def dcp_a2a_lse_reduce(
     cp_attn_out: torch.Tensor,
     cp_attn_lse: torch.Tensor,
@@ -316,7 +327,7 @@ def dcp_a2a_lse_reduce(
         Combined output [B, H/N, D] (head-scattered)
         If return_lse=True, also returns global_lse [B, H/N]
     """
-    if os.environ.get("VLLM_HELIX_A2A_BACKEND") == "flashinfer_native":
+    if _get_helix_backend() == "flashinfer_native":
         from vllm.v1.attention.ops.helix import helix_alltoall_lse_reduce
         return helix_alltoall_lse_reduce(
             cp_attn_out, cp_attn_lse, cp_group,

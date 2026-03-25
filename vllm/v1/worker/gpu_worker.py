@@ -603,6 +603,11 @@ class Worker(WorkerBase):
         # cuda graph capture.
         kernel_warmup(self)
 
+        # Pre-initialize Helix A2A workspace before CUDA graph capture.
+        # The FlashInfer workspace requires synchronous Gloo collectives
+        # (barrier after init) which cannot run inside CUDA graph capture.
+        self._helix_a2a_pre_init()
+
         cuda_graph_memory_bytes = 0
         if not self.model_config.enforce_eager:
             cuda_graph_memory_bytes = self.model_runner.capture_model()
@@ -709,6 +714,34 @@ class Worker(WorkerBase):
         set_random_seed(self.model_config.seed)
 
         return self.compilation_config.compilation_time
+
+    def _helix_a2a_pre_init(self) -> None:
+        """Pre-initialize Helix A2A workspace before CUDA graph capture.
+
+        The FlashInfer workspace requires synchronous Gloo collectives
+        (barrier after init) which cannot run inside CUDA graph capture.
+        Triggering the lazy singleton here ensures it is ready.
+        """
+        pc = self.parallel_config
+        if not (pc.helix_mode
+                and pc.helix_a2a_backend == "flashinfer_native"):
+            return
+        if pc.decode_context_parallel_size <= 1:
+            return
+
+        from vllm.distributed.helix_alltoall_flashinfer import (
+            HelixAllToAllFlashInfer,
+        )
+        from vllm.distributed.parallel_state import get_dcp_group
+
+        dcp_group = get_dcp_group()
+        HelixAllToAllFlashInfer.get(
+            cp_rank=dcp_group.rank_in_group,
+            cp_size=dcp_group.world_size,
+            cp_cpu_group=dcp_group.cpu_group,
+        )
+        logger.info(
+            "Helix A2A workspace pre-initialized for CUDA graph capture")
 
     def reset_mm_cache(self) -> None:
         self.model_runner.reset_mm_cache()
