@@ -315,7 +315,7 @@ class ParallelConfig:
     Reference: https://arxiv.org/abs/2507.07120
     """
 
-    helix_a2a_backend: Literal["nccl", "flashinfer_native"] = "nccl"
+    dcp_a2a_backend: Literal["nccl", "flashinfer_native"] = "nccl"
     """Backend for Helix all-to-all communication.
 
     - "nccl": Uses dist.all_to_all_single via NCCL (default, existing path).
@@ -428,9 +428,9 @@ class ParallelConfig:
                     "helix_mode requires decode_context_parallel_size > 1"
                 )
 
-        if self.helix_a2a_backend == "flashinfer_native" and not self.helix_mode:
+        if self.dcp_a2a_backend == "flashinfer_native" and not self.helix_mode:
             raise ValueError(
-                "helix_a2a_backend='flashinfer_native' requires helix_mode=True"
+                "dcp_a2a_backend='flashinfer_native' requires helix_mode=True"
             )
 
         return self

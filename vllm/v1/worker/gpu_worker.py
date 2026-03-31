@@ -606,7 +606,7 @@ class Worker(WorkerBase):
         # Pre-initialize Helix A2A workspace before CUDA graph capture.
         # The FlashInfer workspace requires synchronous Gloo collectives
         # (barrier after init) which cannot run inside CUDA graph capture.
-        self._helix_a2a_pre_init()
+        self._dcp_a2a_pre_init()
 
         cuda_graph_memory_bytes = 0
         if not self.model_config.enforce_eager:
@@ -715,7 +715,7 @@ class Worker(WorkerBase):
 
         return self.compilation_config.compilation_time
 
-    def _helix_a2a_pre_init(self) -> None:
+    def _dcp_a2a_pre_init(self) -> None:
         """Pre-initialize Helix A2A workspace before CUDA graph capture.
 
         The FlashInfer workspace requires synchronous Gloo collectives
@@ -724,18 +724,18 @@ class Worker(WorkerBase):
         """
         pc = self.parallel_config
         if not (pc.helix_mode
-                and pc.helix_a2a_backend == "flashinfer_native"):
+                and pc.dcp_a2a_backend == "flashinfer_native"):
             return
         if pc.decode_context_parallel_size <= 1:
             return
 
-        from vllm.distributed.helix_alltoall_flashinfer import (
-            HelixAllToAllFlashInfer,
+        from vllm.distributed.dcp_alltoall_flashinfer import (
+            DCPAllToAllFlashInfer,
         )
         from vllm.distributed.parallel_state import get_dcp_group
 
         dcp_group = get_dcp_group()
-        HelixAllToAllFlashInfer.get(
+        DCPAllToAllFlashInfer.get(
             cp_rank=dcp_group.rank_in_group,
             cp_size=dcp_group.world_size,
             cp_cpu_group=dcp_group.cpu_group,

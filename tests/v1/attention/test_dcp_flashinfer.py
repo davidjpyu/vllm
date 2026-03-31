@@ -42,10 +42,10 @@ def _flashinfer_helix_available() -> bool:
         import torch
         torch.cuda.init()
         from flashinfer.comm import (  # noqa: F401
-            helix_a2a_alltoall,
-            helix_a2a_allocate_workspace,
-            helix_a2a_init_workspace,
-            helix_a2a_workspace_size,
+            dcp_a2a_alltoall,
+            dcp_a2a_allocate_workspace,
+            dcp_a2a_init_workspace,
+            dcp_a2a_workspace_size,
         )
         return True
     except (ImportError, Exception):
@@ -80,8 +80,8 @@ def _mock_gpu_count(n=4):
     )
 
 
-class TestHelixConfig:
-    """Verify helix_mode and helix_a2a_backend config validation."""
+class TestDCPConfig:
+    """Verify helix_mode and dcp_a2a_backend config validation."""
 
     def test_helix_mode_requires_dcp_gt_1(self):
         from vllm.config.parallel import ParallelConfig
@@ -101,7 +101,7 @@ class TestHelixConfig:
                 tensor_parallel_size=4,
                 decode_context_parallel_size=4,
                 helix_mode=False,
-                helix_a2a_backend="flashinfer_native",
+                dcp_a2a_backend="flashinfer_native",
             )
 
     def test_valid_helix_config(self):
@@ -111,10 +111,10 @@ class TestHelixConfig:
                 tensor_parallel_size=4,
                 decode_context_parallel_size=4,
                 helix_mode=True,
-                helix_a2a_backend="flashinfer_native",
+                dcp_a2a_backend="flashinfer_native",
             )
         assert cfg.helix_mode is True
-        assert cfg.helix_a2a_backend == "flashinfer_native"
+        assert cfg.dcp_a2a_backend == "flashinfer_native"
         assert cfg.helix_kvp_size == 4
         assert cfg.helix_tpa_size == 1
 
@@ -280,33 +280,33 @@ class TestFlashInferWorkspace:
     """Verify FlashInfer workspace allocation and initialization."""
 
     def test_workspace_size_positive(self):
-        from flashinfer.comm import helix_a2a_workspace_size
+        from flashinfer.comm import dcp_a2a_workspace_size
         for cp_size in [2, 4]:
-            ws = helix_a2a_workspace_size(cp_size)
+            ws = dcp_a2a_workspace_size(cp_size)
             assert isinstance(ws, int)
             assert ws > 0
 
     def test_allocate_workspace_shape(self):
         from flashinfer.comm import (
-            helix_a2a_allocate_workspace,
-            helix_a2a_workspace_size,
+            dcp_a2a_allocate_workspace,
+            dcp_a2a_workspace_size,
         )
         for cp_size in [2, 4]:
-            ws_bytes = helix_a2a_workspace_size(cp_size)
-            workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+            ws_bytes = dcp_a2a_workspace_size(cp_size)
+            workspace = dcp_a2a_allocate_workspace(cp_size, cp_rank=0)
             assert workspace.dtype == torch.int64
             assert workspace.shape[0] == cp_size
             assert workspace.shape[1] == (ws_bytes + 7) // 8
 
     def test_init_workspace_does_not_hang(self):
         from flashinfer.comm import (
-            helix_a2a_allocate_workspace,
-            helix_a2a_init_workspace,
+            dcp_a2a_allocate_workspace,
+            dcp_a2a_init_workspace,
         )
         for cp_size in [2, 4]:
-            workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+            workspace = dcp_a2a_allocate_workspace(cp_size, cp_rank=0)
             for r in range(cp_size):
-                helix_a2a_init_workspace(workspace, r, cp_size)
+                dcp_a2a_init_workspace(workspace, r, cp_size)
             torch.cuda.synchronize()
 
 
@@ -334,13 +334,13 @@ class TestFlashInferA2ACorrectness:
     def test_alltoall_transpose(self, cp_size, B, D, S, dtype):
         """recv[r][.., peer, :] == input[peer][.., r, :]."""
         from flashinfer.comm import (
-            helix_a2a_alltoall,
-            helix_a2a_allocate_workspace,
-            helix_a2a_init_workspace,
+            dcp_a2a_alltoall,
+            dcp_a2a_allocate_workspace,
+            dcp_a2a_init_workspace,
         )
 
         torch.cuda.set_device(0)
-        workspace = helix_a2a_allocate_workspace(cp_size, cp_rank=0)
+        workspace = dcp_a2a_allocate_workspace(cp_size, cp_rank=0)
 
         all_po = [
             torch.randn(B, cp_size, D, dtype=dtype, device="cuda")
@@ -352,7 +352,7 @@ class TestFlashInferA2ACorrectness:
         ]
 
         for r in range(cp_size):
-            helix_a2a_init_workspace(workspace, r, cp_size)
+            dcp_a2a_init_workspace(workspace, r, cp_size)
         torch.cuda.synchronize()
 
         streams = [torch.cuda.Stream() for _ in range(cp_size)]
@@ -361,7 +361,7 @@ class TestFlashInferA2ACorrectness:
 
         for r in range(cp_size):
             with torch.cuda.stream(streams[r]):
-                o, s = helix_a2a_alltoall(
+                o, s = dcp_a2a_alltoall(
                     all_po[r], all_ss[r], workspace, r, cp_size,
                 )
                 recv_o[r] = _to_torch(o)
@@ -386,30 +386,30 @@ class TestFlashInferA2ACorrectness:
 
 
 @requires_flashinfer_helix
-class TestHelixAllToAllFlashInferManager:
-    """Test the HelixAllToAllFlashInfer workspace manager."""
+class TestDCPAllToAllFlashInferManager:
+    """Test the DCPAllToAllFlashInfer workspace manager."""
 
     def setup_method(self):
-        from vllm.distributed.helix_alltoall_flashinfer import (
-            HelixAllToAllFlashInfer,
+        from vllm.distributed.dcp_alltoall_flashinfer import (
+            DCPAllToAllFlashInfer,
         )
-        HelixAllToAllFlashInfer.clear_cache()
+        DCPAllToAllFlashInfer.clear_cache()
 
     def test_manager_caches_by_key(self):
         """Verify workspace is cached per (cp_rank, cp_size)."""
-        from vllm.distributed.helix_alltoall_flashinfer import (
-            HelixAllToAllFlashInfer,
+        from vllm.distributed.dcp_alltoall_flashinfer import (
+            DCPAllToAllFlashInfer,
         )
 
         # Use direct allocation (no process group)
-        mgr1 = HelixAllToAllFlashInfer.get(cp_rank=0, cp_size=2)
-        mgr2 = HelixAllToAllFlashInfer.get(cp_rank=0, cp_size=2)
+        mgr1 = DCPAllToAllFlashInfer.get(cp_rank=0, cp_size=2)
+        mgr2 = DCPAllToAllFlashInfer.get(cp_rank=0, cp_size=2)
         assert mgr1 is mgr2
 
     def test_manager_run_returns_correct_shapes(self):
         """Verify run() returns tensors of the correct shape."""
-        from vllm.distributed.helix_alltoall_flashinfer import (
-            HelixAllToAllFlashInfer,
+        from vllm.distributed.dcp_alltoall_flashinfer import (
+            DCPAllToAllFlashInfer,
         )
 
         cp_size = 2
@@ -417,9 +417,9 @@ class TestHelixAllToAllFlashInferManager:
 
         # Initialize for all simulated ranks
         for r in range(cp_size):
-            mgr = HelixAllToAllFlashInfer.get(cp_rank=r, cp_size=cp_size)
+            mgr = DCPAllToAllFlashInfer.get(cp_rank=r, cp_size=cp_size)
 
-        mgr = HelixAllToAllFlashInfer.get(cp_rank=0, cp_size=cp_size)
+        mgr = DCPAllToAllFlashInfer.get(cp_rank=0, cp_size=cp_size)
 
         partial_o = torch.randn(
             B, cp_size, D, dtype=torch.bfloat16, device="cuda",
@@ -445,13 +445,13 @@ class TestEngineArgsHelix:
     """Verify EngineArgs accepts and passes through helix CLI args."""
 
     def test_engine_args_has_helix_fields(self):
-        """EngineArgs should have helix_mode and helix_a2a_backend."""
+        """EngineArgs should have helix_mode and dcp_a2a_backend."""
         from vllm.engine.arg_utils import EngineArgs
         args = EngineArgs(model="facebook/opt-125m")
         assert hasattr(args, "helix_mode")
-        assert hasattr(args, "helix_a2a_backend")
+        assert hasattr(args, "dcp_a2a_backend")
         assert args.helix_mode is False
-        assert args.helix_a2a_backend == "nccl"
+        assert args.dcp_a2a_backend == "nccl"
 
     def test_engine_args_helix_mode_set(self):
         """EngineArgs should accept helix_mode=True."""
@@ -459,12 +459,12 @@ class TestEngineArgsHelix:
         args = EngineArgs(
             model="facebook/opt-125m",
             helix_mode=True,
-            helix_a2a_backend="flashinfer_native",
+            dcp_a2a_backend="flashinfer_native",
             decode_context_parallel_size=4,
             tensor_parallel_size=4,
         )
         assert args.helix_mode is True
-        assert args.helix_a2a_backend == "flashinfer_native"
+        assert args.dcp_a2a_backend == "flashinfer_native"
 
 
 class TestDCPBackendDetection:
@@ -485,12 +485,12 @@ class TestDCPBackendDetection:
         assert result == "nccl"
 
 
-class TestHelixPreInit:
+class TestDCPPreInit:
     """Verify the pre-init hook logic in gpu_worker.
 
     We cannot import vllm.v1.worker.gpu_worker directly because it triggers
     a deep import chain requiring compiled C extensions (cutlass ops, etc.).
-    Instead, we read the _helix_a2a_pre_init source and verify the logic
+    Instead, we read the _dcp_a2a_pre_init source and verify the logic
     inline using the ParallelConfig objects.
     """
 
@@ -505,9 +505,9 @@ class TestHelixPreInit:
                 helix_mode=False,
             )
 
-        # Reproduce the guard logic from _helix_a2a_pre_init
+        # Reproduce the guard logic from _dcp_a2a_pre_init
         should_skip = not (pc.helix_mode
-                           and pc.helix_a2a_backend == "flashinfer_native")
+                           and pc.dcp_a2a_backend == "flashinfer_native")
         assert should_skip, "Pre-init should skip when helix_mode is False"
 
     def test_pre_init_skips_when_nccl_backend(self):
@@ -519,11 +519,11 @@ class TestHelixPreInit:
                 tensor_parallel_size=4,
                 decode_context_parallel_size=4,
                 helix_mode=True,
-                helix_a2a_backend="nccl",
+                dcp_a2a_backend="nccl",
             )
 
         should_skip = not (pc.helix_mode
-                           and pc.helix_a2a_backend == "flashinfer_native")
+                           and pc.dcp_a2a_backend == "flashinfer_native")
         assert should_skip, "Pre-init should skip when backend is nccl"
 
     def test_pre_init_activates_for_flashinfer_native(self):
@@ -535,11 +535,11 @@ class TestHelixPreInit:
                 tensor_parallel_size=4,
                 decode_context_parallel_size=4,
                 helix_mode=True,
-                helix_a2a_backend="flashinfer_native",
+                dcp_a2a_backend="flashinfer_native",
             )
 
         should_activate = (pc.helix_mode
-                           and pc.helix_a2a_backend == "flashinfer_native"
+                           and pc.dcp_a2a_backend == "flashinfer_native"
                            and pc.decode_context_parallel_size > 1)
         assert should_activate, "Pre-init should activate for flashinfer_native"
 

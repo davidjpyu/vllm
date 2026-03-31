@@ -276,11 +276,11 @@ def helix_lse_combine_triton(
 # ============================================================================
 
 
-def _get_helix_a2a_backend() -> str:
-    """Return the configured helix_a2a_backend, or "nccl" if unavailable."""
+def _get_dcp_a2a_backend() -> str:
+    """Return the configured dcp_a2a_backend, or "nccl" if unavailable."""
     try:
         from vllm.config import get_current_vllm_config
-        return get_current_vllm_config().parallel_config.helix_a2a_backend
+        return get_current_vllm_config().parallel_config.dcp_a2a_backend
     except Exception:
         return "nccl"
 
@@ -290,7 +290,7 @@ def _get_helix_a2a_backend() -> str:
 # ============================================================================
 
 
-def _helix_alltoall_nccl(
+def _dcp_alltoall_nccl(
     local_output: torch.Tensor,
     local_lse: torch.Tensor,
     kvp_group: GroupCoordinator,
@@ -372,7 +372,7 @@ def _helix_alltoall_nccl(
 # ============================================================================
 
 
-def _helix_alltoall_flashinfer_native(
+def _dcp_alltoall_flashinfer_native(
     local_output: torch.Tensor,
     local_lse: torch.Tensor,
     kvp_group: GroupCoordinator,
@@ -391,8 +391,8 @@ def _helix_alltoall_flashinfer_native(
     kernel, then reshape back to [N, B, H/N, D] / [N, B, H/N] for the
     Triton combine step.
     """
-    from vllm.distributed.helix_alltoall_flashinfer import (
-        HelixAllToAllFlashInfer,
+    from vllm.distributed.dcp_alltoall_flashinfer import (
+        DCPAllToAllFlashInfer,
     )
 
     N = world_size
@@ -423,7 +423,7 @@ def _helix_alltoall_flashinfer_native(
     softmax_stats[:, :, 0] = lse_permuted
 
     # --- Run FlashInfer kernel ---
-    mgr = HelixAllToAllFlashInfer.get(
+    mgr = DCPAllToAllFlashInfer.get(
         cp_rank=cp_rank,
         cp_size=cp_size,
         cp_cpu_group=kvp_group.cpu_group,
@@ -452,7 +452,7 @@ def _helix_alltoall_flashinfer_native(
 # ============================================================================
 
 
-def helix_alltoall_lse_reduce(
+def dcp_alltoall_lse_reduce(
     local_output: torch.Tensor,
     local_lse: torch.Tensor,
     kvp_group: GroupCoordinator,
@@ -462,7 +462,7 @@ def helix_alltoall_lse_reduce(
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Perform Helix-style attention output combination using All-to-All.
 
-    Supports two backends (configured via ``helix_a2a_backend``):
+    Supports two backends (configured via ``dcp_a2a_backend``):
 
     **NCCL (default):** Uses a single packed A2A call per layer, fusing
     output and LSE into one tensor [N,B,H/N,D+K] to minimize NCCL call
@@ -501,15 +501,15 @@ def helix_alltoall_lse_reduce(
     B, H, D = local_output.shape
     H_per_rank = H // world_size
 
-    backend = _get_helix_a2a_backend()
+    backend = _get_dcp_a2a_backend()
 
     if backend == "flashinfer_native":
-        recv_output, recv_lse = _helix_alltoall_flashinfer_native(
+        recv_output, recv_lse = _dcp_alltoall_flashinfer_native(
             local_output, local_lse, kvp_group,
             world_size, B, H_per_rank, D,
         )
     else:
-        recv_output, recv_lse = _helix_alltoall_nccl(
+        recv_output, recv_lse = _dcp_alltoall_nccl(
             local_output, local_lse, kvp_group,
             world_size, B, H_per_rank, D,
         )

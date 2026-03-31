@@ -418,7 +418,7 @@ class EngineArgs:
     decode_context_parallel_size: int = ParallelConfig.decode_context_parallel_size
     dcp_comm_backend: DCPCommBackend = ParallelConfig.dcp_comm_backend
     helix_mode: bool = ParallelConfig.helix_mode
-    helix_a2a_backend: str = ParallelConfig.helix_a2a_backend
+    dcp_a2a_backend: str = ParallelConfig.dcp_a2a_backend
     dcp_kv_cache_interleave_size: int = ParallelConfig.dcp_kv_cache_interleave_size
     cp_kv_cache_interleave_size: int = ParallelConfig.cp_kv_cache_interleave_size
     data_parallel_size: int = ParallelConfig.data_parallel_size
@@ -852,7 +852,7 @@ class EngineArgs:
         )
         parallel_group.add_argument(
             "--helix-a2a-backend",
-            **parallel_kwargs["helix_a2a_backend"],
+            **parallel_kwargs["dcp_a2a_backend"],
         )
         parallel_group.add_argument(
             "--dcp-kv-cache-interleave-size",
@@ -1778,7 +1778,7 @@ class EngineArgs:
             decode_context_parallel_size=self.decode_context_parallel_size,
             dcp_comm_backend=self.dcp_comm_backend,
             helix_mode=self.helix_mode,
-            helix_a2a_backend=self.helix_a2a_backend,
+            dcp_a2a_backend=self.dcp_a2a_backend,
             dcp_kv_cache_interleave_size=self.dcp_kv_cache_interleave_size,
             cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
             _api_process_count=self._api_process_count,
