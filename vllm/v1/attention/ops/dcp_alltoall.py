@@ -286,7 +286,7 @@ def _get_helix_backend() -> str:
         from vllm.config import get_current_vllm_config
         cfg = get_current_vllm_config().parallel_config
         if cfg.helix_mode:
-            return cfg.helix_a2a_backend
+            return cfg.dcp_a2a_backend
     except Exception:
         pass
     return os.environ.get("VLLM_HELIX_A2A_BACKEND", "nccl")
@@ -328,8 +328,8 @@ def dcp_a2a_lse_reduce(
         If return_lse=True, also returns global_lse [B, H/N]
     """
     if _get_helix_backend() == "flashinfer_native":
-        from vllm.v1.attention.ops.helix import helix_alltoall_lse_reduce
-        return helix_alltoall_lse_reduce(
+        from vllm.v1.attention.ops.helix import dcp_alltoall_lse_reduce
+        return dcp_alltoall_lse_reduce(
             cp_attn_out, cp_attn_lse, cp_group,
             ctx=ctx, return_lse=return_lse,
             is_lse_base_on_e=is_lse_base_on_e,
