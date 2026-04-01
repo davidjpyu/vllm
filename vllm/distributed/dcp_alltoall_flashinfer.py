@@ -177,11 +177,16 @@ class DCPAllToAllFlashInfer:
         from flashinfer.comm import Mapping
         from flashinfer.comm.mnnvl import MnnvlConfig, TorchDistBackend
 
+        # Use tp_size=cp_size so all CP ranks share one MNNVL communicator.
+        # MnnvlMemory.set_comm_from_config splits by
+        #   color = pp_rank * cp_size + cp_rank, key = tp_rank
+        # With cp_size=1, all ranks get color=0 (same group).
+        # With tp_size=cp_size, each rank gets a unique key (0..N-1).
         mapping = Mapping(
             world_size=cp_size,
             rank=cp_rank,
-            cp_size=cp_size,
-            tp_size=1,
+            cp_size=1,
+            tp_size=cp_size,
             pp_size=1,
         )
 
