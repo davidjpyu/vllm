@@ -117,15 +117,8 @@ class DCPAllToAllFlashInfer:
         use_mnnvl = DCPAllToAllFlashInfer._should_use_mnnvl(cp_cpu_group)
 
         if use_mnnvl:
-            mapping, mnnvl_config = (
-                DCPAllToAllFlashInfer._build_mnnvl_params(
-                    cp_rank, cp_size, cp_cpu_group,
-                )
-            )
-            workspace = dcp_a2a_allocate_workspace(
-                cp_size, cp_rank,
-                mapping=mapping,
-                mnnvl_config=mnnvl_config,
+            workspace = DCPAllToAllFlashInfer._allocate_mnnvl(
+                cp_rank, cp_size, cp_cpu_group,
             )
             logger.info(
                 "Rank %d: MNNVL workspace allocated via FlashInfer — "
@@ -168,35 +161,54 @@ class DCPAllToAllFlashInfer:
             return False
 
     @staticmethod
-    def _build_mnnvl_params(
+    def _allocate_mnnvl(
         cp_rank: int,
         cp_size: int,
         cp_cpu_group: Optional[dist.ProcessGroup],
-    ) -> tuple[Any, Any]:
-        """Construct FlashInfer Mapping + MnnvlConfig from vLLM state."""
-        from flashinfer.comm import Mapping
-        from flashinfer.comm.mnnvl import MnnvlConfig, TorchDistBackend
+    ) -> torch.Tensor:
+        """Allocate MNNVL workspace for DCP A2A.
 
-        # Use tp_size=cp_size so all CP ranks share one MNNVL communicator.
-        # MnnvlMemory.set_comm_from_config splits by
-        #   color = pp_rank * cp_size + cp_rank, key = tp_rank
-        # With cp_size=1, all ranks get color=0 (same group).
-        # With tp_size=cp_size, each rank gets a unique key (0..N-1).
+        Follows TRT-LLM's HelixCpMnnvlMemory approach: set up a
+        communicator where CP peers are grouped together.
+
+        FlashInfer's default ``set_comm_from_config`` uses a split that
+        groups TP peers (for MoE A2A). For DCP A2A we need CP peers
+        grouped instead. TRT-LLM solves this with a dedicated
+        ``HelixCpMnnvlMemory`` subclass that overrides the split:
+
+            MoE (default):  color = pp_rank * cp_size + cp_rank  → TP peers
+            Helix CP:       color = pp_rank * tp_size + tp_rank  → CP peers
+
+        Since ``cp_cpu_group`` already contains exactly the CP peers,
+        we set the communicator directly — no split needed.
+        """
+        from flashinfer.comm import Mapping, dcp_a2a_workspace_size
+        from flashinfer.comm.mnnvl import MnnvlMemory, TorchDistBackend
+
+        # Initialize MNNVL subsystem
+        MnnvlMemory.initialize()
+
+        # Set communicator directly to the CP group — all CP peers share
+        # one MNNVL workspace. No split needed because cp_cpu_group
+        # already contains exactly the ranks that must share memory.
+        MnnvlMemory.comm = TorchDistBackend(group=cp_cpu_group)
+
+        # Mapping is only used by MnnvlMemory.__init__ for segment layout.
+        # The comm is already set above, so set_comm_from_config is skipped.
         mapping = Mapping(
             world_size=cp_size,
             rank=cp_rank,
-            cp_size=1,
-            tp_size=cp_size,
+            cp_size=cp_size,
+            tp_size=1,
             pp_size=1,
         )
 
-        mnnvl_config = None
-        if cp_cpu_group is not None:
-            mnnvl_config = MnnvlConfig(
-                comm_backend=TorchDistBackend(group=cp_cpu_group),
-            )
+        ws_bytes = dcp_a2a_workspace_size(cp_size)
+        mnnvl_mem = MnnvlMemory(mapping, ws_bytes)
+        workspace = mnnvl_mem.as_torch_strided_tensor(torch.int64)
+        workspace._mnnvl_mem = mnnvl_mem  # prevent GC
 
-        return mapping, mnnvl_config
+        return workspace
 
     def run(
         self,
