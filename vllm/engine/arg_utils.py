@@ -885,6 +885,7 @@ class EngineArgs:
             "--helix-mode",
             **parallel_kwargs["helix_mode"],
         )
+        parallel_kwargs["dcp_a2a_backend"]["dest"] = "dcp_a2a_backend"
         parallel_group.add_argument(
             "--helix-a2a-backend",
             **parallel_kwargs["dcp_a2a_backend"],
