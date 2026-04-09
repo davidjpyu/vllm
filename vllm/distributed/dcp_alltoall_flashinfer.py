@@ -4,7 +4,7 @@
 Workspace manager for FlashInfer's DCP all-to-all kernel.
 
 Manages the workspace lifecycle (allocate → init → barrier → reuse) for
-FlashInfer's ``dcp_a2a_alltoall``.  Replaces the prior vLLM-native
+FlashInfer's ``decode_cp_a2a_alltoall``.  Replaces the prior vLLM-native
 workspace manager (``dcp_alltoall_native.py``) and the manual MNNVL
 allocation (``helix_mnnvl_workspace.py``).
 
@@ -86,8 +86,8 @@ class DCPAllToAllFlashInfer:
                 cp_rank, cp_size, cp_cpu_group,
             )
 
-            from flashinfer.comm import dcp_a2a_init_workspace
-            dcp_a2a_init_workspace(workspace, cp_rank, cp_size)
+            from flashinfer.comm import decode_cp_a2a_init_workspace
+            decode_cp_a2a_init_workspace(workspace, cp_rank, cp_size)
 
             if cp_cpu_group is not None:
                 dist.barrier(group=cp_cpu_group)
@@ -112,7 +112,7 @@ class DCPAllToAllFlashInfer:
         cp_cpu_group: Optional[dist.ProcessGroup],
     ) -> tuple[torch.Tensor, bool]:
         """Allocate workspace, returning ``(workspace, used_mnnvl)``."""
-        from flashinfer.comm import dcp_a2a_allocate_workspace
+        from flashinfer.comm import decode_cp_a2a_allocate_workspace
 
         use_mnnvl = DCPAllToAllFlashInfer._should_use_mnnvl(cp_cpu_group)
 
@@ -127,7 +127,7 @@ class DCPAllToAllFlashInfer:
             )
             return workspace, True
 
-        workspace = dcp_a2a_allocate_workspace(cp_size, cp_rank)
+        workspace = decode_cp_a2a_allocate_workspace(cp_size, cp_rank)
         logger.info(
             "Rank %d: device workspace allocated via FlashInfer — "
             "cp_size=%d, shape=%s",
@@ -182,7 +182,7 @@ class DCPAllToAllFlashInfer:
         Since ``cp_cpu_group`` already contains exactly the CP peers,
         we set the communicator directly — no split needed.
         """
-        from flashinfer.comm import Mapping, dcp_a2a_workspace_size
+        from flashinfer.comm import Mapping, decode_cp_a2a_workspace_size
         from flashinfer.comm.mnnvl import MnnvlMemory, TorchDistBackend
 
         # Initialize MNNVL subsystem
@@ -203,7 +203,7 @@ class DCPAllToAllFlashInfer:
             pp_size=1,
         )
 
-        ws_bytes = dcp_a2a_workspace_size(cp_size)
+        ws_bytes = decode_cp_a2a_workspace_size(cp_size)
         mnnvl_mem = MnnvlMemory(mapping, ws_bytes)
         workspace = mnnvl_mem.as_torch_strided_tensor(torch.int64)
         workspace._mnnvl_mem = mnnvl_mem  # prevent GC
@@ -225,9 +225,9 @@ class DCPAllToAllFlashInfer:
             Tuple of tensors with the same shapes/dtypes as inputs,
             containing the all-to-all exchanged data.
         """
-        from flashinfer.comm import dcp_a2a_alltoall
+        from flashinfer.comm import decode_cp_a2a_alltoall
 
-        recv_o, recv_stats = dcp_a2a_alltoall(
+        recv_o, recv_stats = decode_cp_a2a_alltoall(
             partial_o, softmax_stats,
             self.workspace, self.cp_rank, self.cp_size,
         )
@@ -240,8 +240,8 @@ class DCPAllToAllFlashInfer:
 
     @property
     def workspace_bytes_per_rank(self) -> int:
-        from flashinfer.comm import dcp_a2a_workspace_size
-        return dcp_a2a_workspace_size(self.cp_size)
+        from flashinfer.comm import decode_cp_a2a_workspace_size
+        return decode_cp_a2a_workspace_size(self.cp_size)
 
     def __repr__(self) -> str:
         return (
