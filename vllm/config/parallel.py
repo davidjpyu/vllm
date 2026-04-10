@@ -462,6 +462,17 @@ class ParallelConfig:
                     f"--tensor-parallel-size-attention {tpa}."
                 )
 
+        if self.helix_mode:
+            if self.decode_context_parallel_size <= 1:
+                raise ValueError(
+                    "helix_mode requires decode_context_parallel_size > 1"
+                )
+
+        if self.dcp_a2a_backend == "flashinfer_native" and not self.helix_mode:
+            raise ValueError(
+                "dcp_a2a_backend='flashinfer_native' requires helix_mode=True"
+            )
+
         return self
 
     @property
@@ -476,21 +487,6 @@ class ParallelConfig:
     def dcp_size(self) -> int:
         """DCP (decode context parallel) size."""
         return self.decode_context_parallel_size
-
-    @property
-
-        if self.helix_mode:
-            if self.decode_context_parallel_size <= 1:
-                raise ValueError(
-                    "helix_mode requires decode_context_parallel_size > 1"
-                )
-
-        if self.dcp_a2a_backend == "flashinfer_native" and not self.helix_mode:
-            raise ValueError(
-                "dcp_a2a_backend='flashinfer_native' requires helix_mode=True"
-            )
-
-        return self
 
     @property
     def helix_kvp_size(self) -> int:
