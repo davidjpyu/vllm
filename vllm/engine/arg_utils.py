@@ -882,6 +882,8 @@ class EngineArgs:
             "--tensor-parallel-size-attention",
             "-tpa",
             **parallel_kwargs["tensor_parallel_size_attention"],
+        )
+        parallel_group.add_argument(
             "--helix-mode",
             **parallel_kwargs["helix_mode"],
         )
