@@ -1008,6 +1008,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         *,
         return_bias: bool = True,
         disable_tp: bool = False,
+        disable_tpa: bool = False,
         v_head_size: int | None = None,
     ):
         self.hidden_size = hidden_size
@@ -1019,8 +1020,14 @@ class QKVParallelLinear(ColumnParallelLinear):
         self.total_num_kv_heads = total_num_kv_heads
         # Divide the weight matrix along the last dimension.
         tp_size = get_tensor_model_parallel_world_size() if not disable_tp else 1
-        attn_tp_size = get_attention_tp_world_size(disable_tp)
-        attn_tp_rank = get_attention_tp_rank(disable_tp)
+        if disable_tpa:
+            # VLM encoders: use full TP for head sharding (consistent with
+            # RowParallelLinear output projection which always uses full TP).
+            attn_tp_size = tp_size
+            attn_tp_rank = get_tensor_model_parallel_rank() if not disable_tp else 0
+        else:
+            attn_tp_size = get_attention_tp_world_size(disable_tp)
+            attn_tp_rank = get_attention_tp_rank(disable_tp)
         self.num_heads = divide(self.total_num_heads, attn_tp_size)
         if attn_tp_size >= self.total_num_kv_heads:
             self.num_kv_heads = 1

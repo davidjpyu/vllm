@@ -340,6 +340,7 @@ class Qwen2_5_VisionAttention(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.qkv",
             disable_tp=use_data_parallel,
+            disable_tpa=not use_data_parallel,
         )
 
         self.proj = RowParallelLinear(
