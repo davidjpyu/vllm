@@ -32,7 +32,7 @@ from transformers import Qwen3Config
 
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
-from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size, get_attention_tp_world_size
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention.encoder_only_attention import (
     Attention,
@@ -75,7 +75,7 @@ class Qwen3Attention(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
-        tp_size = get_tensor_model_parallel_world_size()
+        tp_size = get_attention_tp_world_size()  # TPA-aware (matches QKVParallelLinear)
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
