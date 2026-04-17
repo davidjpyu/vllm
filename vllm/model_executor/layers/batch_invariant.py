@@ -18,6 +18,10 @@ from vllm.v1.attention.backends.registry import AttentionBackendEnum
 logger = init_logger(__name__)
 
 
+def vllm_is_batch_invariant() -> bool:
+    return envs.VLLM_BATCH_INVARIANT
+
+
 def _matmul_launch_metadata(
     grid: Callable[..., Any], kernel: Any, args: dict[str, Any]
 ) -> dict[str, Any]:
