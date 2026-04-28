@@ -585,6 +585,11 @@ class Worker(WorkerBase):
         # cuda graph capture.
         kernel_warmup(self)
 
+        # Pre-allocate the FlashInfer DCP A2A workspace before CUDA graph
+        # capture; the post-init Gloo barrier deadlocks if it first runs
+        # inside graph capture.
+        self._dcp_a2a_pre_init()
+
         cuda_graph_memory_bytes = 0
         if not self.model_config.enforce_eager:
             cuda_graph_memory_bytes = self.model_runner.capture_model()
@@ -695,6 +700,35 @@ class Worker(WorkerBase):
             language_model=self.compilation_config.compilation_time,
             encoder=self.compilation_config.encoder_compilation_time,
         )
+
+    def _dcp_a2a_pre_init(self) -> None:
+        """Pre-allocate the FlashInfer DCP A2A workspace.
+
+        FlashInfer's workspace setup ends with a CPU barrier on the CP
+        group, which uses Gloo. Triggering Gloo for the first time
+        inside CUDA graph capture deadlocks, so we force the lazy
+        singleton to materialize here, before ``capture_model``.
+        """
+        pc = self.parallel_config
+        if pc.dcp_comm_backend != "a2a":
+            return
+        if pc.dcp_a2a_backend != "flashinfer":
+            return
+        if pc.decode_context_parallel_size <= 1:
+            return
+
+        from vllm.distributed.dcp_alltoall_flashinfer import (
+            DCPAllToAllFlashInfer,
+        )
+        from vllm.distributed.parallel_state import get_dcp_group
+
+        g = get_dcp_group()
+        DCPAllToAllFlashInfer.get(
+            cp_rank=g.rank_in_group,
+            cp_size=g.world_size,
+            cp_cpu_group=g.cpu_group,
+        )
+        logger.info("FlashInfer DCP A2A workspace pre-initialized.")
 
     def reset_mm_cache(self) -> None:
         self.model_runner.reset_mm_cache()

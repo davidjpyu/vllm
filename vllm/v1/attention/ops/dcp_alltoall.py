@@ -327,32 +327,41 @@ def dcp_a2a_lse_reduce(
     B, H, D = local_output.shape
     H_per_rank = H // world_size
 
-    # Reshape for All-to-All: [B, H, D] -> [N, B, H/N, D]
-    # Split heads into N chunks, each destined for a different rank
-    send_output = (
-        local_output.view(B, world_size, H_per_rank, D).permute(1, 0, 2, 3).contiguous()
-    )
-    recv_output = torch.empty_like(send_output)
+    if _get_dcp_a2a_backend() == "flashinfer":
+        recv_output, recv_lse = _alltoall_flashinfer(
+            local_output, local_lse, cp_group, B, world_size, H_per_rank, D
+        )
+    else:
+        # Reshape for All-to-All: [B, H, D] -> [N, B, H/N, D]
+        # Split heads into N chunks, each destined for a different rank
+        send_output = (
+            local_output.view(B, world_size, H_per_rank, D)
+            .permute(1, 0, 2, 3)
+            .contiguous()
+        )
+        recv_output = torch.empty_like(send_output)
 
-    # Same for LSE: [B, H] -> [N, B, H/N]
-    send_lse = local_lse.view(B, world_size, H_per_rank).permute(1, 0, 2).contiguous()
-    recv_lse = torch.empty_like(send_lse)
+        # Same for LSE: [B, H] -> [N, B, H/N]
+        send_lse = (
+            local_lse.view(B, world_size, H_per_rank).permute(1, 0, 2).contiguous()
+        )
+        recv_lse = torch.empty_like(send_lse)
 
-    # All-to-All for partial attention outputs and LSE values (async overlap)
-    work_output = dist.all_to_all_single(
-        recv_output.view(-1),
-        send_output.view(-1),
-        group=cp_group.device_group,
-        async_op=True,
-    )
-    work_lse = dist.all_to_all_single(
-        recv_lse.view(-1),
-        send_lse.view(-1),
-        group=cp_group.device_group,
-        async_op=True,
-    )
-    work_output.wait()
-    work_lse.wait()
+        # All-to-All for partial attention outputs and LSE values (async overlap)
+        work_output = dist.all_to_all_single(
+            recv_output.view(-1),
+            send_output.view(-1),
+            group=cp_group.device_group,
+            async_op=True,
+        )
+        work_lse = dist.all_to_all_single(
+            recv_lse.view(-1),
+            send_lse.view(-1),
+            group=cp_group.device_group,
+            async_op=True,
+        )
+        work_output.wait()
+        work_lse.wait()
 
     # LSE-weighted combination via Triton kernel (local, no communication)
     return dcp_lse_combine_triton(
@@ -361,3 +370,90 @@ def dcp_a2a_lse_reduce(
         return_lse=return_lse,
         is_lse_base_on_e=is_lse_base_on_e,
     )
+
+
+def _get_dcp_a2a_backend() -> str:
+    """Return the DCP A2A backend (``"nccl"`` or ``"flashinfer"``).
+
+    Reads from ``ParallelConfig.dcp_a2a_backend`` via the global vLLM
+    config. Falls back to ``"nccl"`` when no config is registered (e.g.
+    in unit-test contexts that exercise the function directly).
+    """
+    try:
+        from vllm.config import get_current_vllm_config
+        return get_current_vllm_config().parallel_config.dcp_a2a_backend
+    except Exception:
+        return "nccl"
+
+
+def _alltoall_flashinfer(
+    local_output: torch.Tensor,
+    local_lse: torch.Tensor,
+    cp_group: "GroupCoordinator",
+    B: int,
+    world_size: int,
+    H_per_rank: int,
+    D: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """FlashInfer DCP A2A path (single fused LL128 + MNNVL kernel).
+
+    FlashInfer's ``decode_cp_a2a_alltoall`` expects::
+
+        partial_o:     [..., cp_size, D]            half/bfloat16
+        softmax_stats: [..., cp_size, S]            float32, S>=2 even
+
+    We reshape vLLM's ``[B, H, D]`` / ``[B, H]`` into those shapes, run
+    the kernel, then reshape back to ``[N, B, H/N, D]`` / ``[N, B, H/N]``
+    so the Triton LSE-combine kernel below works unchanged.
+
+    The kernel only shuffles bytes — it does not interpret the
+    ``softmax_stats`` payload semantically, so packing the LSE into
+    ``stats[..., 0]`` (with a trailing zero in slot 1) round-trips
+    cleanly regardless of ``is_lse_base_on_e``.
+    """
+    from vllm.distributed.dcp_alltoall_flashinfer import DCPAllToAllFlashInfer
+
+    entry_count = B * H_per_rank
+    N = world_size
+
+    # [B, H, D] -> [B, N, H/N, D] -> [B, H/N, N, D] -> [B*H/N, N, D]
+    partial_o = (
+        local_output.view(B, N, H_per_rank, D)
+        .permute(0, 2, 1, 3)
+        .reshape(entry_count, N, D)
+        .contiguous()
+    )
+
+    # [B, H] -> [B, N, H/N] -> [B, H/N, N] -> [B*H/N, N]
+    lse_permuted = (
+        local_lse.view(B, N, H_per_rank)
+        .permute(0, 2, 1)
+        .reshape(entry_count, N)
+        .contiguous()
+    )
+    softmax_stats = torch.zeros(
+        entry_count, N, 2, dtype=torch.float32, device=local_lse.device
+    )
+    softmax_stats[..., 0] = lse_permuted
+
+    mgr = DCPAllToAllFlashInfer.get(
+        cp_rank=cp_group.rank_in_group,
+        cp_size=N,
+        cp_cpu_group=cp_group.cpu_group,
+    )
+    partial_o_out, ss_out = mgr.run(partial_o, softmax_stats)
+
+    # [B*H/N, N, D] -> [B, H/N, N, D] -> [N, B, H/N, D]
+    recv_output = (
+        partial_o_out.view(B, H_per_rank, N, D)
+        .permute(2, 0, 1, 3)
+        .contiguous()
+    )
+    # [B*H/N, N] -> [B, H/N, N] -> [N, B, H/N]
+    recv_lse = (
+        ss_out[..., 0]
+        .view(B, H_per_rank, N)
+        .permute(2, 0, 1)
+        .contiguous()
+    )
+    return recv_output, recv_lse
