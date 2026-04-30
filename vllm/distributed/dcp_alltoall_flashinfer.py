@@ -27,7 +27,6 @@ cost is paid exactly once per process.
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -129,47 +128,24 @@ class DCPAllToAllFlashInfer:
         cp_size: int,
         cp_cpu_group: "ProcessGroup | None",
     ) -> tuple[torch.Tensor, bool]:
-        """Allocate workspace, returning ``(workspace, used_mnnvl)``."""
-        from flashinfer.comm import decode_cp_a2a_allocate_workspace
+        """Allocate the MNNVL workspace; non-MNNVL is unsupported.
 
-        if DCPAllToAllFlashInfer._should_use_mnnvl(cp_cpu_group):
-            workspace = DCPAllToAllFlashInfer._allocate_mnnvl(
-                cp_rank, cp_size, cp_cpu_group
-            )
-            return workspace, True
-
-        workspace = decode_cp_a2a_allocate_workspace(cp_size, cp_rank)
-        return workspace, False
-
-    @staticmethod
-    def _should_use_mnnvl(cp_cpu_group: "ProcessGroup | None") -> bool:
-        """Decide whether to use MNNVL workspace allocation.
-
-        Resolution order:
-          1. ``VLLM_DCP_USE_MNNVL=0|false`` → device memory (off).
-          2. ``VLLM_DCP_USE_MNNVL=1|true``  → force MNNVL.
-          3. default ``auto`` → MNNVL when the CP group spans multiple
-             nodes, plain device memory otherwise.
+        FlashInfer's ``decode_cp_a2a_alltoall`` kernel addresses peer FIFOs
+        through a single ``params.workspace + peer_rank * stride`` base
+        pointer. That only resolves correctly when the workspace is a
+        unified VA backed by MNNVL fabric memory. The plain ``torch.zeros``
+        fallback in PR #2951 hangs the kernel — see
+        ``project_dcp_a2a_h200_unsupported.md`` for a full diagnosis.
         """
-        env = os.environ.get("VLLM_DCP_USE_MNNVL", "auto").strip().lower()
-        if env in ("0", "false", "no", "off"):
-            return False
-        if env in ("1", "true", "yes", "on"):
-            return True
-
         if cp_cpu_group is None:
-            return False
-        try:
-            from vllm.distributed.parallel_state import in_the_same_node_as
-            same_node = in_the_same_node_as(cp_cpu_group, source_rank=0)
-            return not all(same_node)
-        except Exception:
-            logger.warning(
-                "Could not determine multi-node status for CP group; "
-                "falling back to device memory.",
-                exc_info=True,
+            raise RuntimeError(
+                "DCPAllToAllFlashInfer requires a Gloo CPU group for MNNVL "
+                "communicator setup; got cp_cpu_group=None."
             )
-            return False
+        workspace = DCPAllToAllFlashInfer._allocate_mnnvl(
+            cp_rank, cp_size, cp_cpu_group
+        )
+        return workspace, True
 
     @staticmethod
     def _allocate_mnnvl(
