@@ -413,6 +413,17 @@ def _alltoall_flashinfer(
     """
     from vllm.distributed.dcp_alltoall_flashinfer import DCPAllToAllFlashInfer
 
+    # DEBUG: log every call so the LAST line before a crash tells us what
+    # the crashing call's B/H_per_rank/D actually were. Rank 0 only.
+    if cp_group.rank_in_group == 0:
+        import sys
+        print(
+            f"[a2a-call] B={B} N={world_size} H_per_rank={H_per_rank} D={D} "
+            f"local_output.shape={tuple(local_output.shape)} "
+            f"local_lse.shape={tuple(local_lse.shape)}",
+            file=sys.stderr, flush=True,
+        )
+
     entry_count = B * H_per_rank
     N = world_size
 
