@@ -23,31 +23,27 @@ Per-call:
 Workspaces are cached by ``(cp_rank, cp_size)`` so the allocate+init
 cost is paid exactly once per process.
 
-KNOWN ISSUE — concurrency-dependent CUDA illegal memory access
-==============================================================
-Under real serving load with multiple in-flight sequences the path can
-hit ``CUDA error: an illegal memory access was encountered`` from the
-NCCL ProcessGroup watchdog. Empirical findings as of 2026-05-06:
+Critical: pass ``enable_pdl=False`` to ``decode_cp_a2a_alltoall``
+=================================================================
+FlashInfer 0.6.9 defaults ``enable_pdl=True`` on SM90+ (Programmatic
+Dependent Launch), letting kernels following the helix A2A overlap with
+its tail. Under vLLM's MLA decode path with multiple in-flight sequences
+this overlap races against the helix workspace FIFO and triggers a
+``CUDA error: an illegal memory access was encountered`` from the NCCL
+ProcessGroup watchdog. Reproduces reliably with DeepSeek-V2-Lite-Chat,
+TP=4 DCP=4 on GB200, gsm8k 5-shot, lm-eval ``num_concurrent=8``.
 
-* DeepSeek-V2-Lite-Chat, TP=4 DCP=4 GB200, gsm8k 5-shot, lm-eval
-  ``num_concurrent=8`` reliably reproduces the crash.
-* Sequential calls (smoke or ``num_concurrent=1``) never crash, even at
-  B=1024.
-* Adding ``CUDA_LAUNCH_BLOCKING=1`` makes it disappear.
-* Running with ``--max-num-seqs 2`` (cap concurrent decode sequences)
-  also makes it disappear with full accuracy parity vs NCCL ag_rs.
-* compute-sanitizer cannot reproduce — its slowdown changes timing
-  enough to hide the race.
+TensorRT-LLM's binding (``cpp/tensorrt_llm/thop/alltoallOp.cpp``)
+does NOT use PDL for this kernel — that's why TRT-LLM's helix CP path
+never hit this in production. We match TRT-LLM by passing
+``enable_pdl=False`` from the vLLM wrapper.
 
-Workarounds for now:
-
-* ``vllm serve ... --max-num-seqs 2`` — caps concurrent decode batch
-  small enough to avoid the race. Throughput drops accordingly.
-* ``CUDA_LAUNCH_BLOCKING=1`` env — serializes every CUDA launch.
-  Even bigger throughput hit but always safe.
-
-Root cause is still under investigation; see
-``work-tracker/flashinfer-a2a/`` for the current state of the dig.
+Diagnosis history (2026-05-05/06): single-call smoke at any B passes,
+500-call sequential loop with NCCL all-gather + LSE-combine triton
+passes, ``CUDA_LAUNCH_BLOCKING=1`` masks the bug, ``--max-num-seqs 2``
+masks the bug, compute-sanitizer's slowdown also masks it. Final
+isolation came from comparing FlashInfer's ``launchHelixAllToAll``
+4-arg signature (with ``enablePdl``) against TRT-LLM's 3-arg version.
 """
 
 from __future__ import annotations
