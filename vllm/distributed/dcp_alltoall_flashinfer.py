@@ -207,24 +207,10 @@ class DCPAllToAllFlashInfer:
         """
         from flashinfer.comm import decode_cp_a2a_alltoall
 
-        # PROBE: re-initialize workspace FIFO before EACH alltoall, with
-        # cross-rank barrier. Hypothesis: FlashInfer's FIFO head/tail state
-        # accumulates across calls and eventually corrupts (reproduced at
-        # gsm8k c=8). FlashInfer doc says "call once before first alltoall",
-        # but if the kernel doesn't reset state correctly, repeated reinit
-        # may avoid the corruption. This is a perf-killing diagnostic.
-        from flashinfer.comm import decode_cp_a2a_init_workspace
-        torch.cuda.synchronize()
-        decode_cp_a2a_init_workspace(self.workspace, self.cp_rank, self.cp_size)
-        torch.cuda.synchronize()
-        if self._cp_cpu_group is not None:
-            import torch.distributed as dist
-            dist.barrier(group=self._cp_cpu_group)
         recv_o, recv_stats = decode_cp_a2a_alltoall(
             partial_o, softmax_stats,
             self.workspace, self.cp_rank, self.cp_size,
         )
-        torch.cuda.synchronize()
         return _to_torch(recv_o), _to_torch(recv_stats)
 
     @staticmethod
