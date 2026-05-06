@@ -204,10 +204,21 @@ class DCPAllToAllFlashInfer:
         """
         from flashinfer.comm import decode_cp_a2a_alltoall
 
+        # Serialize across all CUDA streams. The workspace FIFOs are shared
+        # across the whole CP group; if two attention forwards on different
+        # streams call decode_cp_a2a_alltoall concurrently, their FIFO
+        # head/tail pointers race → CUDA illegal memory access. Empirically
+        # reproduced at gsm8k concurrency=8 and confirmed fixed by
+        # CUDA_LAUNCH_BLOCKING=1. ``torch.cuda.synchronize()`` mimics that
+        # by blocking until ALL streams drain before we launch.
+        # TODO: replace with a dedicated comm stream + wait_stream once the
+        # kernel/wrapper is made stream-safe.
+        torch.cuda.synchronize()
         recv_o, recv_stats = decode_cp_a2a_alltoall(
             partial_o, softmax_stats,
             self.workspace, self.cp_rank, self.cp_size,
         )
+        torch.cuda.synchronize()
         return _to_torch(recv_o), _to_torch(recv_stats)
 
     @staticmethod
