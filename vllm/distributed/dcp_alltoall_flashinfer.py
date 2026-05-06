@@ -233,9 +233,16 @@ class DCPAllToAllFlashInfer:
         """
         from flashinfer.comm import decode_cp_a2a_alltoall
 
+        # IMPORTANT: enable_pdl=False matches TRT-LLM, which does NOT use
+        # Programmatic Dependent Launch for this kernel. FlashInfer defaults
+        # to PDL=True on SM90+, which lets the next kernel start before this
+        # kernel finishes — under vLLM's MLA decode path with concurrent
+        # in-flight sequences this triggers a CUDA illegal memory access.
+        # See module docstring "KNOWN ISSUE" for the full diagnosis.
         recv_o, recv_stats = decode_cp_a2a_alltoall(
             partial_o, softmax_stats,
             self.workspace, self.cp_rank, self.cp_size,
+            enable_pdl=False,
         )
         return _to_torch(recv_o), _to_torch(recv_stats)
 
