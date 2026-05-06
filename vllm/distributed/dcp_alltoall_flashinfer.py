@@ -22,6 +22,32 @@ Per-call:
 
 Workspaces are cached by ``(cp_rank, cp_size)`` so the allocate+init
 cost is paid exactly once per process.
+
+KNOWN ISSUE — concurrency-dependent CUDA illegal memory access
+==============================================================
+Under real serving load with multiple in-flight sequences the path can
+hit ``CUDA error: an illegal memory access was encountered`` from the
+NCCL ProcessGroup watchdog. Empirical findings as of 2026-05-06:
+
+* DeepSeek-V2-Lite-Chat, TP=4 DCP=4 GB200, gsm8k 5-shot, lm-eval
+  ``num_concurrent=8`` reliably reproduces the crash.
+* Sequential calls (smoke or ``num_concurrent=1``) never crash, even at
+  B=1024.
+* Adding ``CUDA_LAUNCH_BLOCKING=1`` makes it disappear.
+* Running with ``--max-num-seqs 2`` (cap concurrent decode sequences)
+  also makes it disappear with full accuracy parity vs NCCL ag_rs.
+* compute-sanitizer cannot reproduce — its slowdown changes timing
+  enough to hide the race.
+
+Workarounds for now:
+
+* ``vllm serve ... --max-num-seqs 2`` — caps concurrent decode batch
+  small enough to avoid the race. Throughput drops accordingly.
+* ``CUDA_LAUNCH_BLOCKING=1`` env — serializes every CUDA launch.
+  Even bigger throughput hit but always safe.
+
+Root cause is still under investigation; see
+``work-tracker/flashinfer-a2a/`` for the current state of the dig.
 """
 
 from __future__ import annotations
