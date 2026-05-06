@@ -67,11 +67,13 @@ class DCPAllToAllFlashInfer:
         workspace: torch.Tensor,
         *,
         use_mnnvl: bool,
+        cp_cpu_group: "ProcessGroup | None" = None,
     ) -> None:
         self.cp_rank = cp_rank
         self.cp_size = cp_size
         self.workspace = workspace
         self._use_mnnvl = use_mnnvl
+        self._cp_cpu_group = cp_cpu_group
 
     @staticmethod
     def get(
@@ -112,7 +114,8 @@ class DCPAllToAllFlashInfer:
             torch.cuda.synchronize()
 
         mgr = DCPAllToAllFlashInfer(
-            cp_rank, cp_size, workspace, use_mnnvl=used_mnnvl
+            cp_rank, cp_size, workspace, use_mnnvl=used_mnnvl,
+            cp_cpu_group=cp_cpu_group,
         )
         DCPAllToAllFlashInfer._cache[key] = mgr
         logger.info(
@@ -204,15 +207,16 @@ class DCPAllToAllFlashInfer:
         """
         from flashinfer.comm import decode_cp_a2a_alltoall
 
-        # Serialize across all CUDA streams. The workspace FIFOs are shared
-        # across the whole CP group; if two attention forwards on different
-        # streams call decode_cp_a2a_alltoall concurrently, their FIFO
-        # head/tail pointers race → CUDA illegal memory access. Empirically
-        # reproduced at gsm8k concurrency=8 and confirmed fixed by
-        # CUDA_LAUNCH_BLOCKING=1. ``torch.cuda.synchronize()`` mimics that
-        # by blocking until ALL streams drain before we launch.
-        # TODO: replace with a dedicated comm stream + wait_stream once the
-        # kernel/wrapper is made stream-safe.
+        # Cross-rank barrier before each kernel launch. The MNNVL workspace
+        # FIFO is updated cooperatively across CP ranks; if rank A is on
+        # call N+1 while rank B is still on call N, the FIFO head/tail
+        # become inconsistent → CUDA illegal memory access (reproduced at
+        # gsm8k concurrency=8). Sync via the cp_cpu_group so all ranks
+        # enter the kernel at the same logical step.
+        # cuda.synchronize() drains local streams; barrier aligns ranks.
+        if self._cp_cpu_group is not None:
+            import torch.distributed as dist
+            dist.barrier(group=self._cp_cpu_group)
         torch.cuda.synchronize()
         recv_o, recv_stats = decode_cp_a2a_alltoall(
             partial_o, softmax_stats,
