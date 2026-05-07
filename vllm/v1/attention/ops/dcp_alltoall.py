@@ -413,28 +413,31 @@ def _alltoall_flashinfer(
     """
     from vllm.distributed.dcp_alltoall_flashinfer import DCPAllToAllFlashInfer
 
-    entry_count = B * H_per_rank
     N = world_size
 
-    # [B, H, D] -> [B, N, H/N, D] -> [B, H/N, N, D] -> [B*H/N, N, D]
-    partial_o = (
-        local_output.view(B, N, H_per_rank, D)
-        .permute(0, 2, 1, 3)
-        .reshape(entry_count, N, D)
-        .contiguous()
-    )
+    # TRT-LLM style reshape: pack heads-in-partition into the last dim so the
+    # kernel's first dim is num_tokens (B), not B*H_per_rank. Compared to the
+    # earlier vllm-only "[B*H_per_rank, N, D]" path this produces 1/H_per_rank
+    # the number of "entries" the kernel iterates over (8× fewer at H=32 cp=4),
+    # avoids a .contiguous() copy, and matches what TRT-LLM's
+    # _attn_forward_gen passes to the same kernel:
+    #
+    #   partial_o.view(num_tokens, cp_size, num_heads_tp_cp * value_dim)
+    #
+    # The original head order is [CP0_heads | CP1_heads | ... | CPN_heads]
+    # along dim 1 (preserved by the prior AllGather(dim=1)), so a plain view
+    # to [B, N, H_per_rank * D] is correct without a permute.
+    partial_o = local_output.view(B, N, H_per_rank * D)
 
-    # [B, H] -> [B, N, H/N] -> [B, H/N, N] -> [B*H/N, N]
-    lse_permuted = (
-        local_lse.view(B, N, H_per_rank)
-        .permute(0, 2, 1)
-        .reshape(entry_count, N)
+    # softmax_stats: pack [lse, 0] for each (token, peer, h_per_rank) so the
+    # last dim has stride 2 (S=2). lse layout follows partial_o: [B, N, H/N].
+    lse_3d = local_lse.view(B, N, H_per_rank)
+    zeros_3d = torch.zeros_like(lse_3d)
+    softmax_stats = (
+        torch.stack([lse_3d, zeros_3d], dim=-1)  # [B, N, H/N, 2]
+        .view(B, N, H_per_rank * 2)
         .contiguous()
     )
-    softmax_stats = torch.zeros(
-        entry_count, N, 2, dtype=torch.float32, device=local_lse.device
-    )
-    softmax_stats[..., 0] = lse_permuted
 
     mgr = DCPAllToAllFlashInfer.get(
         cp_rank=cp_group.rank_in_group,
@@ -443,17 +446,16 @@ def _alltoall_flashinfer(
     )
     partial_o_out, ss_out = mgr.run(partial_o, softmax_stats)
 
-    # [B*H/N, N, D] -> [B, H/N, N, D] -> [N, B, H/N, D]
+    # Output permute back to [N, B, H/N, D] for downstream triton.
     recv_output = (
-        partial_o_out.view(B, H_per_rank, N, D)
-        .permute(2, 0, 1, 3)
+        partial_o_out.view(B, N, H_per_rank, D)
+        .permute(1, 0, 2, 3)
         .contiguous()
     )
-    # [B*H/N, N] -> [B, H/N, N] -> [N, B, H/N]
+    # ss_out: [B, N, H/N * 2] -> [B, N, H/N, 2] -> take lse slot 0 -> [N, B, H/N]
     recv_lse = (
-        ss_out[..., 0]
-        .view(B, H_per_rank, N)
-        .permute(2, 0, 1)
+        ss_out.view(B, N, H_per_rank, 2)[..., 0]
+        .permute(1, 0, 2)
         .contiguous()
     )
     return recv_output, recv_lse
