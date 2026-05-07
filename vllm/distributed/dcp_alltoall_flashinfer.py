@@ -229,32 +229,11 @@ class DCPAllToAllFlashInfer:
         """
         from flashinfer.comm import decode_cp_a2a_alltoall
 
-        # DEBUG (c=64 investigation): rank 0 logs every call's input shape +
-        # syncs after the kernel + checks for CUDA error. The LAST line
-        # before the crash tells us the (B, partial_o.shape) that triggered
-        # the illegal memory.
-        import os, sys
-        if self.cp_rank == 0 and os.environ.get("DCP_A2A_DEBUG") == "1":
-            print(
-                f"[a2a-call] po={tuple(partial_o.shape)} ss={tuple(softmax_stats.shape)} "
-                f"po_dtype={partial_o.dtype} po_contig={partial_o.is_contiguous()}",
-                file=sys.stderr, flush=True,
-            )
-
         recv_o, recv_stats = decode_cp_a2a_alltoall(
             partial_o, softmax_stats,
             self.workspace, self.cp_rank, self.cp_size,
             enable_pdl=False,
         )
-
-        if self.cp_rank == 0 and os.environ.get("DCP_A2A_DEBUG") == "1":
-            try:
-                torch.cuda.synchronize()
-                print("[a2a-call]   POST-SYNC OK", file=sys.stderr, flush=True)
-            except RuntimeError as e:
-                print(f"[a2a-call]   POST-SYNC CRASH: {e}", file=sys.stderr, flush=True)
-                raise
-
         return _to_torch(recv_o), _to_torch(recv_stats)
 
     @staticmethod
