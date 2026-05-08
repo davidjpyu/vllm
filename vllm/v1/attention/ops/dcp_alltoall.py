@@ -328,11 +328,6 @@ def dcp_a2a_lse_reduce(
     H_per_rank = H // world_size
 
     _backend = _get_dcp_a2a_backend()
-    try:
-        with open("/tmp/dispatch.log", "a") as _f:
-            _f.write(f"backend={_backend} B={B} ws={world_size}\n")
-    except Exception:
-        pass
     if _backend == "flashinfer":
         recv_output, recv_lse = _alltoall_flashinfer(
             local_output, local_lse, cp_group, B, world_size, H_per_rank, D
@@ -378,13 +373,31 @@ def dcp_a2a_lse_reduce(
     )
 
 
-def _get_dcp_a2a_backend() -> str:
-    """Return the DCP A2A backend (``"nccl"`` or ``"flashinfer"``).
+# Module-level cache of the DCP A2A backend choice. Set by
+# ``gpu_worker.py`` at workspace pre-init (where vllm_config is reliably
+# available), and read by the dispatcher during model forward — V1's
+# async scheduling path doesn't enter ``set_current_vllm_config()`` for
+# every forward, so ``get_current_vllm_config()`` raises and the original
+# fallback silently routed every A2A call to NCCL even when the user
+# asked for FlashInfer.
+_DCP_A2A_BACKEND: str | None = None
 
-    Reads from ``ParallelConfig.dcp_a2a_backend`` via the global vLLM
-    config. Falls back to ``"nccl"`` when no config is registered (e.g.
-    in unit-test contexts that exercise the function directly).
+
+def set_dcp_a2a_backend(backend: str) -> None:
+    """Cache the DCP A2A backend on this worker process.
+
+    Called once from ``gpu_worker.py`` after parsing the parallel
+    config, so the dispatcher can route correctly without depending on
+    ``get_current_vllm_config()`` during forward.
     """
+    global _DCP_A2A_BACKEND
+    _DCP_A2A_BACKEND = backend
+
+
+def _get_dcp_a2a_backend() -> str:
+    """Return the DCP A2A backend (``"nccl"`` or ``"flashinfer"``)."""
+    if _DCP_A2A_BACKEND is not None:
+        return _DCP_A2A_BACKEND
     try:
         from vllm.config import get_current_vllm_config
         return get_current_vllm_config().parallel_config.dcp_a2a_backend

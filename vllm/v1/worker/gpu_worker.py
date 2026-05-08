@@ -721,6 +721,7 @@ class Worker(WorkerBase):
             DCPAllToAllFlashInfer,
         )
         from vllm.distributed.parallel_state import get_dcp_group
+        from vllm.v1.attention.ops.dcp_alltoall import set_dcp_a2a_backend
 
         g = get_dcp_group()
         DCPAllToAllFlashInfer.get(
@@ -728,6 +729,10 @@ class Worker(WorkerBase):
             cp_size=g.world_size,
             cp_cpu_group=g.cpu_group,
         )
+        # Cache the backend on this worker process so the dispatcher
+        # routes to FlashInfer during forward (V1's async scheduling
+        # context doesn't expose vllm_config to dispatcher callers).
+        set_dcp_a2a_backend(pc.dcp_a2a_backend)
         logger.info("FlashInfer DCP A2A workspace pre-initialized.")
 
     def reset_mm_cache(self) -> None:
