@@ -238,19 +238,26 @@ class DCPAllToAllFlashInfer:
         recv_stats_t = _to_torch(recv_stats)
 
         # DEBUG: log buffer pointers to detect workspace-view return.
-        # If recv_o.data_ptr() cycles across calls → view (next call corrupts
-        # previous result); if monotonically increases → fresh allocations.
-        import os
-        if self.cp_rank == 0 and os.environ.get("DCP_A2A_PTRLOG") == "1":
-            ws_ptr = self.workspace.data_ptr()
-            ws_end = ws_ptr + self.workspace.numel() * self.workspace.element_size()
-            ro = recv_o_t.data_ptr()
-            in_ws = "in_ws" if ws_ptr <= ro < ws_end else "out_ws"
-            logger.info(
-                "[a2a-ptr] B=%d po_ptr=0x%x recv_o_ptr=0x%x %s ws=[0x%x,0x%x)",
-                partial_o.shape[0], partial_o.data_ptr(), ro, in_ws,
-                ws_ptr, ws_end,
-            )
+        # If recv_o.data_ptr() falls inside the workspace memory range →
+        # FlashInfer returned a workspace view (next call corrupts previous
+        # result). If outside → fresh allocation per call. Log first 100
+        # calls, then every 500th.
+        if self.cp_rank == 0:
+            n = getattr(self, "_call_count", 0)
+            if n < 100 or n % 500 == 0:
+                ws_ptr = self.workspace.data_ptr()
+                ws_end = ws_ptr + self.workspace.numel() * self.workspace.element_size()
+                ro = recv_o_t.data_ptr()
+                rs = recv_stats_t.data_ptr()
+                ro_in_ws = "IN_WS" if ws_ptr <= ro < ws_end else "out_ws"
+                rs_in_ws = "IN_WS" if ws_ptr <= rs < ws_end else "out_ws"
+                logger.info(
+                    "[a2a-ptr] n=%d B=%d po=0x%x ro=0x%x(%s) rs=0x%x(%s) "
+                    "ws=[0x%x,0x%x)",
+                    n, partial_o.shape[0], partial_o.data_ptr(),
+                    ro, ro_in_ws, rs, rs_in_ws, ws_ptr, ws_end,
+                )
+            self._call_count = n + 1
 
         return recv_o_t, recv_stats_t
 
