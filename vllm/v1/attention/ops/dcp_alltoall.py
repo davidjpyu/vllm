@@ -327,7 +327,13 @@ def dcp_a2a_lse_reduce(
     B, H, D = local_output.shape
     H_per_rank = H // world_size
 
-    if _get_dcp_a2a_backend() == "flashinfer":
+    _backend = _get_dcp_a2a_backend()
+    try:
+        with open("/tmp/dispatch.log", "a") as _f:
+            _f.write(f"backend={_backend} B={B} ws={world_size}\n")
+    except Exception:
+        pass
+    if _backend == "flashinfer":
         recv_output, recv_lse = _alltoall_flashinfer(
             local_output, local_lse, cp_group, B, world_size, H_per_rank, D
         )
