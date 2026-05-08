@@ -234,7 +234,25 @@ class DCPAllToAllFlashInfer:
             self.workspace, self.cp_rank, self.cp_size,
             enable_pdl=False,
         )
-        return _to_torch(recv_o), _to_torch(recv_stats)
+        recv_o_t = _to_torch(recv_o)
+        recv_stats_t = _to_torch(recv_stats)
+
+        # DEBUG: log buffer pointers to detect workspace-view return.
+        # If recv_o.data_ptr() cycles across calls → view (next call corrupts
+        # previous result); if monotonically increases → fresh allocations.
+        import os
+        if self.cp_rank == 0 and os.environ.get("DCP_A2A_PTRLOG") == "1":
+            ws_ptr = self.workspace.data_ptr()
+            ws_end = ws_ptr + self.workspace.numel() * self.workspace.element_size()
+            ro = recv_o_t.data_ptr()
+            in_ws = "in_ws" if ws_ptr <= ro < ws_end else "out_ws"
+            logger.info(
+                "[a2a-ptr] B=%d po_ptr=0x%x recv_o_ptr=0x%x %s ws=[0x%x,0x%x)",
+                partial_o.shape[0], partial_o.data_ptr(), ro, in_ws,
+                ws_ptr, ws_end,
+            )
+
+        return recv_o_t, recv_stats_t
 
     @staticmethod
     def clear_cache() -> None:
