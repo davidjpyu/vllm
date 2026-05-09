@@ -214,6 +214,22 @@ class DCPAllToAllFlashInfer:
         """
         from flashinfer.comm import decode_cp_a2a_alltoall
 
+        # DEBUG (Phase 3 multinode validation): write one-shot per-rank
+        # marker the first time run() is invoked, to confirm FlashInfer
+        # is actually being routed to (not silently NCCL fallback).
+        # Cheap: one open()+write per process for life of the process.
+        if not getattr(self, "_first_call_logged", False):
+            try:
+                with open(f"/tmp/a2a_first_call.{self.cp_rank}", "w") as f:
+                    f.write(
+                        f"cp_rank={self.cp_rank} cp_size={self.cp_size} "
+                        f"po_shape={tuple(partial_o.shape)} "
+                        f"po_dtype={partial_o.dtype}\n"
+                    )
+            except Exception:
+                pass
+            self._first_call_logged = True
+
         recv_o, recv_stats = decode_cp_a2a_alltoall(
             partial_o, softmax_stats,
             self.workspace, self.cp_rank, self.cp_size,
