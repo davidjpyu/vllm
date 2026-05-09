@@ -22,12 +22,18 @@ Reference: https://arxiv.org/abs/2507.07120
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
 
 from vllm.triton_utils import tl, triton
+
+# A/B-test toggle: if DCP_A2A_RESHAPE_OLD=1, use the original vllm
+# [B*H_per_rank, N, D] reshape instead of the TRT-LLM-style packed
+# [B, N, H_per_rank * D] layout. Read once at import.
+_USE_OLD_RESHAPE = os.environ.get("DCP_A2A_RESHAPE_OLD", "0") == "1"
 
 if TYPE_CHECKING:
     from vllm.distributed.parallel_state import GroupCoordinator
@@ -434,9 +440,52 @@ def _alltoall_flashinfer(
 
     N = world_size
 
-    # Match TRT-LLM's input layout: pack heads-in-partition into the last
-    # dim so the kernel's first dim is num_tokens (B). This matches what
-    # TRT-LLM's ``_attn_forward_gen`` passes to the same kernel:
+    if _USE_OLD_RESHAPE:
+        # Original vllm reshape: [B*H_per_rank, N, D]. Higher per-call
+        # entry count (H_per_rank× more) and an extra .contiguous() copy
+        # vs the TRT-LLM-style packed layout below. Kept behind an env
+        # var for A/B comparison.
+        entry_count = B * H_per_rank
+        partial_o = (
+            local_output.view(B, N, H_per_rank, D)
+            .permute(0, 2, 1, 3)
+            .reshape(entry_count, N, D)
+            .contiguous()
+        )
+        lse_permuted = (
+            local_lse.view(B, N, H_per_rank)
+            .permute(0, 2, 1)
+            .reshape(entry_count, N)
+            .contiguous()
+        )
+        softmax_stats = torch.zeros(
+            entry_count, N, 2, dtype=torch.float32, device=local_lse.device
+        )
+        softmax_stats[..., 0] = lse_permuted
+
+        mgr = DCPAllToAllFlashInfer.get(
+            cp_rank=cp_group.rank_in_group,
+            cp_size=N,
+            cp_cpu_group=cp_group.cpu_group,
+        )
+        partial_o_out, ss_out = mgr.run(partial_o, softmax_stats)
+
+        recv_output = (
+            partial_o_out.view(B, H_per_rank, N, D)
+            .permute(2, 0, 1, 3)
+            .contiguous()
+        )
+        recv_lse = (
+            ss_out[..., 0]
+            .view(B, H_per_rank, N)
+            .permute(2, 0, 1)
+            .contiguous()
+        )
+        return recv_output, recv_lse
+
+    # Default: TRT-LLM-style packed layout. Pack heads-in-partition into
+    # the last dim so the kernel's first dim is num_tokens (B). Matches
+    # what TRT-LLM's ``_attn_forward_gen`` passes:
     #
     #   partial_o.view(num_tokens, cp_size, num_heads_tp_cp * value_dim)
     #

@@ -34,10 +34,16 @@ for production helix CP — so we follow that conservative choice.
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.distributed as dist
+
+# A/B-test toggle: if DCP_A2A_PDL=1, pass enable_pdl=True to the
+# FlashInfer kernel (default False matches TRT-LLM). Read once at import
+# so worker subprocesses pick it up via inherited env.
+_ENABLE_PDL = os.environ.get("DCP_A2A_PDL", "0") == "1"
 
 if TYPE_CHECKING:
     from torch.distributed import ProcessGroup
@@ -217,7 +223,7 @@ class DCPAllToAllFlashInfer:
         recv_o, recv_stats = decode_cp_a2a_alltoall(
             partial_o, softmax_stats,
             self.workspace, self.cp_rank, self.cp_size,
-            enable_pdl=False,
+            enable_pdl=_ENABLE_PDL,
         )
         return _to_torch(recv_o), _to_torch(recv_stats)
 
