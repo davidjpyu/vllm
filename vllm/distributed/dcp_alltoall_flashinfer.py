@@ -8,42 +8,27 @@ flashinfer-ai/flashinfer#2951) so that vLLM's DCP A2A path can use it as
 an alternative to ``dist.all_to_all_single``.
 
 Lifecycle (per CP group, done once):
-  1. Allocate workspace (MNNVL when multi-node, plain device memory when
-     single-node).
+  1. Allocate the MNNVL-backed workspace.
   2. ``decode_cp_a2a_init_workspace`` to reset the FIFO.
   3. CPU barrier across the CP group so every rank's init has completed
      before any rank issues the first all-to-all (otherwise a peer can
      start writing into a not-yet-initialized FIFO).
 
 Per-call:
-  ``run(partial_o, softmax_stats)`` invokes
-  ``decode_cp_a2a_alltoall``. The kernel is a single fused LL128
-  exchange — no extra Python overhead beyond the call.
+  ``run(partial_o, softmax_stats)`` invokes ``decode_cp_a2a_alltoall``.
+  The kernel is a single fused LL128 exchange — no extra Python
+  overhead beyond the call.
 
 Workspaces are cached by ``(cp_rank, cp_size)`` so the allocate+init
 cost is paid exactly once per process.
 
-Critical: pass ``enable_pdl=False`` to ``decode_cp_a2a_alltoall``
-=================================================================
-FlashInfer 0.6.9 defaults ``enable_pdl=True`` on SM90+ (Programmatic
-Dependent Launch), letting kernels following the helix A2A overlap with
-its tail. Under vLLM's MLA decode path with multiple in-flight sequences
-this overlap races against the helix workspace FIFO and triggers a
-``CUDA error: an illegal memory access was encountered`` from the NCCL
-ProcessGroup watchdog. Reproduces reliably with DeepSeek-V2-Lite-Chat,
-TP=4 DCP=4 on GB200, gsm8k 5-shot, lm-eval ``num_concurrent=8``.
-
-TensorRT-LLM's binding (``cpp/tensorrt_llm/thop/alltoallOp.cpp``)
-does NOT use PDL for this kernel — that's why TRT-LLM's helix CP path
-never hit this in production. We match TRT-LLM by passing
-``enable_pdl=False`` from the vLLM wrapper.
-
-Diagnosis history (2026-05-05/06): single-call smoke at any B passes,
-500-call sequential loop with NCCL all-gather + LSE-combine triton
-passes, ``CUDA_LAUNCH_BLOCKING=1`` masks the bug, ``--max-num-seqs 2``
-masks the bug, compute-sanitizer's slowdown also masks it. Final
-isolation came from comparing FlashInfer's ``launchHelixAllToAll``
-4-arg signature (with ``enablePdl``) against TRT-LLM's 3-arg version.
+Note on ``enable_pdl=False``
+============================
+We pass ``enable_pdl=False`` to match TensorRT-LLM's binding
+(``cpp/tensorrt_llm/thop/alltoallOp.cpp``), which uses the 3-arg
+``launchHelixAllToAll`` overload (no PDL). FlashInfer 0.6.9's Python
+binding defaults to PDL on SM90+, but TRT-LLM has shipped without it
+for production helix CP — so we follow that conservative choice.
 """
 
 from __future__ import annotations
@@ -234,35 +219,7 @@ class DCPAllToAllFlashInfer:
             self.workspace, self.cp_rank, self.cp_size,
             enable_pdl=False,
         )
-        recv_o_t = _to_torch(recv_o)
-        recv_stats_t = _to_torch(recv_stats)
-
-        # DEBUG: append per-call ptr to /tmp/a2a_ptrlog.<rank>. Bypasses
-        # vllm's logger (which silently swallows INFO from worker subprocs
-        # in some configs). Writes only first 200 calls + every 500th to
-        # keep the file size bounded.
-        n = getattr(self, "_call_count", 0)
-        if n < 200 or n % 500 == 0:
-            ws_ptr = self.workspace.data_ptr()
-            ws_end = ws_ptr + self.workspace.numel() * self.workspace.element_size()
-            ro = recv_o_t.data_ptr()
-            rs = recv_stats_t.data_ptr()
-            ro_in_ws = "IN_WS" if ws_ptr <= ro < ws_end else "out_ws"
-            rs_in_ws = "IN_WS" if ws_ptr <= rs < ws_end else "out_ws"
-            line = (
-                f"n={n} B={partial_o.shape[0]} "
-                f"po=0x{partial_o.data_ptr():x} "
-                f"ro=0x{ro:x}({ro_in_ws}) rs=0x{rs:x}({rs_in_ws}) "
-                f"ws=[0x{ws_ptr:x},0x{ws_end:x})\n"
-            )
-            try:
-                with open(f"/tmp/a2a_ptrlog.{self.cp_rank}", "a") as f:
-                    f.write(line)
-            except Exception:
-                pass
-        self._call_count = n + 1
-
-        return recv_o_t, recv_stats_t
+        return _to_torch(recv_o), _to_torch(recv_stats)
 
     @staticmethod
     def clear_cache() -> None:

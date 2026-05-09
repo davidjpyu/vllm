@@ -434,18 +434,15 @@ def _alltoall_flashinfer(
 
     N = world_size
 
-    # TRT-LLM style reshape: pack heads-in-partition into the last dim so the
-    # kernel's first dim is num_tokens (B), not B*H_per_rank. Compared to the
-    # earlier vllm-only "[B*H_per_rank, N, D]" path this produces 1/H_per_rank
-    # the number of "entries" the kernel iterates over (8× fewer at H=32 cp=4),
-    # avoids a .contiguous() copy, and matches what TRT-LLM's
-    # _attn_forward_gen passes to the same kernel:
+    # Match TRT-LLM's input layout: pack heads-in-partition into the last
+    # dim so the kernel's first dim is num_tokens (B). This matches what
+    # TRT-LLM's ``_attn_forward_gen`` passes to the same kernel:
     #
     #   partial_o.view(num_tokens, cp_size, num_heads_tp_cp * value_dim)
     #
-    # The original head order is [CP0_heads | CP1_heads | ... | CPN_heads]
-    # along dim 1 (preserved by the prior AllGather(dim=1)), so a plain view
-    # to [B, N, H_per_rank * D] is correct without a permute.
+    # The head order is [CP0_heads | CP1_heads | ... | CPN_heads] along
+    # dim 1 (preserved by the prior AllGather(dim=1)), so a plain view to
+    # [B, N, H_per_rank * D] is correct without a permute.
     partial_o = local_output.view(B, N, H_per_rank * D)
 
     # softmax_stats: pack [lse, 0] for each (token, peer, h_per_rank) so the
