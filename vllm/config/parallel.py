@@ -36,6 +36,7 @@ DistributedExecutorBackend = Literal["ray", "mp", "uni", "external_launcher"]
 DataParallelBackend = Literal["ray", "mp"]
 EPLBPolicyOption = Literal["default"]
 DCPCommBackend = Literal["ag_rs", "a2a"]
+DCPA2ABackend = Literal["nccl", "flashinfer"]
 EPLBCommunicatorBackend = Literal["torch_nccl", "torch_gloo", "nixl", "pynccl"]
 All2AllBackend = Literal[
     "naive",
@@ -356,6 +357,17 @@ class ParallelConfig:
       per layer for MLA models.
     """
 
+    dcp_a2a_backend: DCPA2ABackend = "nccl"
+    """Implementation used by ``dcp_comm_backend="a2a"``.
+    - "nccl" (default): a single packed ``dist.all_to_all_single``
+      exchange of (output, LSE) followed by the Triton LSE-combine
+      kernel.
+    - "flashinfer": FlashInfer's fused ``decode_cp_a2a_alltoall`` (LL128
+      + MNNVL when multi-node), then the same Triton LSE-combine.
+      Requires ``flashinfer`` installed and
+      ``decode_context_parallel_size > 1``.
+    """
+
     cp_kv_cache_interleave_size: int = 1
     """Interleave size of kv_cache storage while using DCP or PCP.
     For `total_cp_rank = pcp_rank * dcp_world_size + dcp_rank`,
@@ -510,6 +522,17 @@ class ParallelConfig:
             raise ValueError(
                 "dcp_comm_backend='a2a' requires decode_context_parallel_size > 1."
             )
+
+        if self.dcp_a2a_backend == "flashinfer":
+            if self.dcp_comm_backend != "a2a":
+                raise ValueError(
+                    "dcp_a2a_backend='flashinfer' requires dcp_comm_backend='a2a'."
+                )
+            if self.decode_context_parallel_size <= 1:
+                raise ValueError(
+                    "dcp_a2a_backend='flashinfer' requires "
+                    "decode_context_parallel_size > 1."
+                )
 
         return self
 
