@@ -351,6 +351,12 @@ class Worker(WorkerBase):
         num_ubatches = 2 if self.vllm_config.parallel_config.enable_dbo else 1
         init_workspace_manager(self.device, num_ubatches)
 
+        # Pre-allocate FlashInfer DCP A2A workspace (when requested) and
+        # cache the backend choice so the dispatcher reads it directly
+        # during V1 async forward (where get_current_vllm_config() may
+        # raise from outside set_current_vllm_config() contexts).
+        self._init_dcp_a2a_flashinfer_workspace()
+
         # Construct the model runner
         if self.use_v2_model_runner:
             from vllm.v1.worker.gpu.model_runner import (
@@ -371,6 +377,39 @@ class Worker(WorkerBase):
         if self.rank == 0:
             # If usage stat is enabled, collect relevant info.
             report_usage_stats(self.vllm_config)
+
+    def _init_dcp_a2a_flashinfer_workspace(self) -> None:
+        """Pre-allocate the FlashInfer DCP A2A workspace and cache the
+        backend choice so the dispatcher routes correctly during forward.
+
+        Caching the backend in a module-level variable avoids depending on
+        ``get_current_vllm_config()`` from V1's async forward path (where
+        ``set_current_vllm_config()`` is not active for every caller).
+        """
+        pc = self.parallel_config
+        if pc.dcp_comm_backend != "a2a":
+            return
+        if pc.decode_context_parallel_size <= 1:
+            return
+
+        from vllm.v1.attention.ops.dcp_alltoall import set_dcp_a2a_backend
+        set_dcp_a2a_backend(pc.dcp_a2a_backend)
+
+        if pc.dcp_a2a_backend != "flashinfer":
+            return
+
+        from vllm.distributed.dcp_alltoall_flashinfer import (
+            DCPAllToAllFlashInfer,
+        )
+        from vllm.distributed.parallel_state import get_dcp_group
+
+        g = get_dcp_group()
+        DCPAllToAllFlashInfer.get(
+            cp_rank=g.rank_in_group,
+            cp_size=g.world_size,
+            cp_cpu_group=g.cpu_group,
+        )
+        logger.info("FlashInfer DCP A2A workspace pre-initialized.")
 
     # FIXME(youkaichao & ywang96): Use TorchDispatchMode instead of memory pool
     # to hijack tensor allocation.

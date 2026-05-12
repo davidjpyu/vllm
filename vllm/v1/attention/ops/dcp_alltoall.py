@@ -32,6 +32,31 @@ if TYPE_CHECKING:
     from vllm.v1.attention.ops.common import CPTritonContext
 
 
+# Module-level cache of the DCP A2A backend choice. Set by
+# ``gpu_worker.py`` at workspace pre-init (where vllm_config is reliably
+# available). The dispatcher reads from cache during forward, avoiding
+# a dependency on ``get_current_vllm_config()`` that raises in V1's
+# async scheduling path.
+_DCP_A2A_BACKEND: str | None = None
+
+
+def set_dcp_a2a_backend(backend: str) -> None:
+    """Cache the DCP A2A backend on this worker process."""
+    global _DCP_A2A_BACKEND
+    _DCP_A2A_BACKEND = backend
+
+
+def _get_dcp_a2a_backend() -> str:
+    """Return the DCP A2A backend (``"nccl"`` or ``"flashinfer"``)."""
+    if _DCP_A2A_BACKEND is not None:
+        return _DCP_A2A_BACKEND
+    try:
+        from vllm.config import get_current_vllm_config
+        return get_current_vllm_config().parallel_config.dcp_a2a_backend
+    except Exception:
+        return "nccl"
+
+
 def _lse_weighted_combine(
     outputs: torch.Tensor,
     lses: torch.Tensor,
@@ -444,13 +469,51 @@ def dcp_a2a_lse_reduce(
         lse_pack_dim,
     )
 
-    work = dist.all_to_all_single(
-        recv_buffer.view(-1),
-        send_buffer.view(-1),
-        group=cp_group.device_group,
-        async_op=True,
-    )
-    work.wait()
+    if _get_dcp_a2a_backend() == "flashinfer":
+        # FlashInfer LL128 + MNNVL kernel: byte-shuffle the same packed
+        # buffer that the NCCL path uses. The kernel views the input as
+        # ``[..., cp_size, D]`` and exchanges along the second-to-last
+        # dim; pack the [N, B, H_per_rank, D'] layout as
+        # ``[B*H_per_rank, N, D']`` to match. ``D' = D + lse_pack_dim``.
+        from vllm.distributed.dcp_alltoall_flashinfer import (
+            DCPAllToAllFlashInfer,
+        )
+
+        D_prime = D + lse_pack_dim
+        send_for_fi = (
+            send_buffer.permute(1, 2, 0, 3)
+            .reshape(B * H_per_rank, world_size, D_prime)
+            .contiguous()
+        )
+        # FlashInfer expects a softmax_stats arg (>=2-wide, even). We've
+        # already packed LSE into send_for_fi above, so pass a tiny
+        # placeholder buffer just to satisfy the API.
+        placeholder = torch.zeros(
+            B * H_per_rank,
+            world_size,
+            2,
+            dtype=torch.float32,
+            device=send_buffer.device,
+        )
+        mgr = DCPAllToAllFlashInfer.get(
+            cp_rank=cp_group.rank_in_group,
+            cp_size=world_size,
+            cp_cpu_group=cp_group.cpu_group,
+        )
+        recv_fi, _ = mgr.run(send_for_fi, placeholder)
+        recv_buffer.copy_(
+            recv_fi.view(B, H_per_rank, world_size, D_prime)
+            .permute(2, 0, 1, 3)
+            .contiguous()
+        )
+    else:
+        work = dist.all_to_all_single(
+            recv_buffer.view(-1),
+            send_buffer.view(-1),
+            group=cp_group.device_group,
+            async_op=True,
+        )
+        work.wait()
 
     return _dcp_a2a_unpack_combine(
         recv_buffer, D, lse_pack_dim, return_lse, is_lse_base_on_e
