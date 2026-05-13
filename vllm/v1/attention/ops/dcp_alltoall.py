@@ -499,25 +499,37 @@ def dcp_a2a_lse_reduce(
             (world_size, B, H_per_rank, D_prime),
             device=cp_attn_out.device, dtype=cp_attn_out.dtype,
         )
+        # recv_o [entry_count, N, D] -> [N, B, H_per_rank, D]
         recv_o_npn = (
-            recv_o.view(B, H_per_rank, world_size, D)
+            recv_o.reshape(B, H_per_rank, world_size, D)
             .permute(2, 0, 1, 3)
             .contiguous()
         )
         recv_buffer[..., :D].copy_(recv_o_npn)
 
-        lse_recv = recv_stats[..., 0].view(B, H_per_rank, world_size)
-        lse_recv = lse_recv.permute(2, 0, 1).contiguous()  # [N, B, H_per_rank]
+        # recv_stats [entry_count, N, 2] -> LSE [N, B, H_per_rank] fp32
+        # (slot 0 is LSE per our send-side convention; slot 1 is zero).
+        # contiguous() *before* .view() because [..., 0] indexing
+        # leaves the tensor non-contiguous.
+        lse_recv = (
+            recv_stats[..., 0]
+            .contiguous()
+            .view(B, H_per_rank, world_size)
+            .permute(2, 0, 1)
+            .contiguous()
+        )  # [N, B, H_per_rank] fp32
         if lse_pack_dim == 1:
-            recv_buffer[..., D] = lse_recv.to(cp_attn_out.dtype)
+            recv_buffer[..., D].copy_(lse_recv.to(cp_attn_out.dtype))
         else:
             # Bitcast fp32 LSE into two bf16 slots, matching what
-            # _dcp_a2a_pack_send_kernel writes for the NCCL path.
+            # _dcp_a2a_pack_send_kernel writes for the NCCL path. Build
+            # contiguous lo/hi tensors first (so view(bfloat16) is legal),
+            # then copy_() into the strided destination slots.
             lse_bits = lse_recv.view(torch.uint32)
-            lo_bf16 = (lse_bits & 0xFFFF).to(torch.uint16).view(torch.bfloat16)
-            hi_bf16 = ((lse_bits >> 16) & 0xFFFF).to(torch.uint16).view(torch.bfloat16)
-            recv_buffer[..., D] = lo_bf16
-            recv_buffer[..., D + 1] = hi_bf16
+            lo_bf16 = (lse_bits & 0xFFFF).to(torch.uint16).contiguous().view(torch.bfloat16)
+            hi_bf16 = ((lse_bits >> 16) & 0xFFFF).to(torch.uint16).contiguous().view(torch.bfloat16)
+            recv_buffer[..., D].copy_(lo_bf16)
+            recv_buffer[..., D + 1].copy_(hi_bf16)
     else:
         send_buffer, recv_buffer = _dcp_a2a_send_recv_buffers(
             (world_size, B, H_per_rank, D + lse_pack_dim),
