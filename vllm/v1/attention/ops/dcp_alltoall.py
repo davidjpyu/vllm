@@ -509,13 +509,15 @@ def dcp_a2a_lse_reduce(
         lse_recv = recv_stats[..., 0].view(B, H_per_rank, world_size)
         lse_recv = lse_recv.permute(2, 0, 1).contiguous()  # [N, B, H_per_rank]
         if lse_pack_dim == 1:
-            recv_buffer[..., D].copy_(lse_recv.to(cp_attn_out.dtype))
+            recv_buffer[..., D] = lse_recv.to(cp_attn_out.dtype)
         else:
+            # Bitcast fp32 LSE into two bf16 slots, matching what
+            # _dcp_a2a_pack_send_kernel writes for the NCCL path.
             lse_bits = lse_recv.view(torch.uint32)
-            lo = (lse_bits & 0xFFFF).to(torch.uint16)
-            hi = ((lse_bits >> 16) & 0xFFFF).to(torch.uint16)
-            recv_buffer[..., D].view(torch.uint16).copy_(lo)
-            recv_buffer[..., D + 1].view(torch.uint16).copy_(hi)
+            lo_bf16 = (lse_bits & 0xFFFF).to(torch.uint16).view(torch.bfloat16)
+            hi_bf16 = ((lse_bits >> 16) & 0xFFFF).to(torch.uint16).view(torch.bfloat16)
+            recv_buffer[..., D] = lo_bf16
+            recv_buffer[..., D + 1] = hi_bf16
     else:
         send_buffer, recv_buffer = _dcp_a2a_send_recv_buffers(
             (world_size, B, H_per_rank, D + lse_pack_dim),
