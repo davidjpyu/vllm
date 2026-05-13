@@ -454,100 +454,69 @@ def dcp_a2a_lse_reduce(
     H_per_rank = H // world_size
     lse_pack_dim = _dcp_a2a_lse_pack_dim(cp_attn_out.dtype)
 
-    if _get_dcp_a2a_backend() == "flashinfer":
-        # FlashInfer's LL128 kernel requires partial_o last dim × elem_size
-        # to be 16-byte aligned. Upstream's packed [D + lse_pack_dim]
-        # layout breaks alignment when D is just-barely-aligned (e.g.
-        # kv_lora_rank=512 bf16 = 1024 B aligned, +2 pack elements = 1028 B
-        # unaligned). So for FlashInfer we pass two separate tensors:
-        # partial_o = [B*H_per_rank, N, D] and softmax_stats = [B*H_per_rank,
-        # N, 2] — both match FlashInfer's native API.
+    use_fi = _get_dcp_a2a_backend() == "flashinfer"
+    if use_fi:
+        # FlashInfer's LL128 kernel requires partial_o last-dim × elem_size
+        # to be 16-byte aligned. Pad ``D + lse_pack_dim`` up to the next
+        # 16-byte multiple. Pack writes only the first ``D + lse_pack_dim``
+        # slots; the padding is unread by unpack_combine (which loads via
+        # explicit offsets HEAD_DIM and HEAD_DIM+1).
+        elem_size = cp_attn_out.element_size()
+        elems_per_16B = 16 // elem_size
+        D_prime_raw = D + lse_pack_dim
+        D_prime = (
+            (D_prime_raw + elems_per_16B - 1) // elems_per_16B
+        ) * elems_per_16B
+    else:
+        D_prime = D + lse_pack_dim
+
+    send_buffer, recv_buffer = _dcp_a2a_send_recv_buffers(
+        (world_size, B, H_per_rank, D_prime),
+        device=cp_attn_out.device,
+        dtype=cp_attn_out.dtype,
+    )
+
+    _dcp_a2a_pack_send(
+        cp_attn_out,
+        cp_attn_lse,
+        send_buffer,
+        world_size,
+        H_per_rank,
+        D,
+        lse_pack_dim,
+    )
+
+    if use_fi:
         from vllm.distributed.dcp_alltoall_flashinfer import (
             DCPAllToAllFlashInfer,
         )
 
-        entry_count = B * H_per_rank
-        partial_o = (
-            cp_attn_out.view(B, world_size, H_per_rank, D)
-            .permute(0, 2, 1, 3)
-            .reshape(entry_count, world_size, D)
+        # send_buffer is [N, B, H_per_rank, D_prime]; permute to
+        # FlashInfer's convention [B*H_per_rank, N, D_prime] (cp_size
+        # is the second-to-last dim).
+        send_for_fi = (
+            send_buffer.permute(1, 2, 0, 3)
+            .reshape(B * H_per_rank, world_size, D_prime)
             .contiguous()
         )
-        lse_perm = (
-            cp_attn_lse.view(B, world_size, H_per_rank)
-            .permute(0, 2, 1)
-            .reshape(entry_count, world_size)
-            .contiguous()
+        # FlashInfer takes a softmax_stats arg as well. LSE is already
+        # bit-packed inside send_for_fi; pass a small placeholder.
+        placeholder = torch.zeros(
+            B * H_per_rank, world_size, 2,
+            dtype=torch.float32, device=send_buffer.device,
         )
-        softmax_stats = torch.zeros(
-            entry_count, world_size, 2,
-            dtype=torch.float32, device=cp_attn_out.device,
-        )
-        softmax_stats[..., 0] = lse_perm
-
         mgr = DCPAllToAllFlashInfer.get(
             cp_rank=cp_group.rank_in_group,
             cp_size=world_size,
             cp_cpu_group=cp_group.cpu_group,
         )
-        recv_o, recv_stats = mgr.run(partial_o, softmax_stats)
-
-        # Re-pack into the [N, B, H_per_rank, D + lse_pack_dim] layout that
-        # ``_dcp_a2a_unpack_combine`` expects, so the same triton combine
-        # kernel works for both backends.
-        D_prime = D + lse_pack_dim
-        recv_buffer = torch.empty(
-            (world_size, B, H_per_rank, D_prime),
-            device=cp_attn_out.device, dtype=cp_attn_out.dtype,
-        )
-        # recv_o [entry_count, N, D] -> [N, B, H_per_rank, D]
-        recv_o_npn = (
-            recv_o.reshape(B, H_per_rank, world_size, D)
+        recv_fi, _ = mgr.run(send_for_fi, placeholder)
+        recv_buffer.copy_(
+            recv_fi.reshape(B, H_per_rank, world_size, D_prime)
             .permute(2, 0, 1, 3)
             .contiguous()
         )
-        recv_buffer[..., :D].copy_(recv_o_npn)
-
-        # recv_stats [entry_count, N, 2] -> LSE [N, B, H_per_rank] fp32
-        # (slot 0 is LSE per our send-side convention; slot 1 is zero).
-        # contiguous() *before* .view() because [..., 0] indexing
-        # leaves the tensor non-contiguous.
-        lse_recv = (
-            recv_stats[..., 0]
-            .contiguous()
-            .view(B, H_per_rank, world_size)
-            .permute(2, 0, 1)
-            .contiguous()
-        )  # [N, B, H_per_rank] fp32
-        if lse_pack_dim == 1:
-            recv_buffer[..., D].copy_(lse_recv.to(cp_attn_out.dtype))
-        else:
-            # Bitcast fp32 LSE into two bf16 slots, matching what
-            # _dcp_a2a_pack_send_kernel writes for the NCCL path. Build
-            # contiguous lo/hi tensors first (so view(bfloat16) is legal),
-            # then copy_() into the strided destination slots.
-            lse_bits = lse_recv.view(torch.uint32)
-            lo_bf16 = (lse_bits & 0xFFFF).to(torch.uint16).contiguous().view(torch.bfloat16)
-            hi_bf16 = ((lse_bits >> 16) & 0xFFFF).to(torch.uint16).contiguous().view(torch.bfloat16)
-            recv_buffer[..., D].copy_(lo_bf16)
-            recv_buffer[..., D + 1].copy_(hi_bf16)
     else:
-        send_buffer, recv_buffer = _dcp_a2a_send_recv_buffers(
-            (world_size, B, H_per_rank, D + lse_pack_dim),
-            device=cp_attn_out.device,
-            dtype=cp_attn_out.dtype,
-        )
-
-        _dcp_a2a_pack_send(
-            cp_attn_out,
-            cp_attn_lse,
-            send_buffer,
-            world_size,
-            H_per_rank,
-            D,
-            lse_pack_dim,
-        )
-
         work = dist.all_to_all_single(
             recv_buffer.view(-1),
             send_buffer.view(-1),
