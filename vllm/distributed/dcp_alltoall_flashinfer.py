@@ -174,7 +174,7 @@ class DCPAllToAllFlashInfer:
         """
         from flashinfer.comm import (
             Mapping,
-            decode_cp_a2a_allocate_workspace,
+            decode_cp_a2a_allocate_mnnvl_workspace,
         )
         from flashinfer.comm.mnnvl import MnnvlMemory, TorchDistBackend
 
@@ -191,7 +191,7 @@ class DCPAllToAllFlashInfer:
             tp_size=1,
             pp_size=1,
         )
-        return decode_cp_a2a_allocate_workspace(
+        return decode_cp_a2a_allocate_mnnvl_workspace(
             cp_size, cp_rank, mapping=mapping
         )
 
