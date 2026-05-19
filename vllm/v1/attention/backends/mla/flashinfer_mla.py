@@ -113,6 +113,11 @@ g_fi_workspace = torch.zeros(
 
 
 class FlashInferMLAImpl(MLACommonImpl[MLACommonMetadata]):
+    # FlashInfer's trtllm-gen MLA decode kernel returns LSE since flashinfer
+    # PR #3116 (2026-05-15). vllm's DCP combine path requires per-token LSE
+    # to do the cross-rank LSE-weighted reduction.
+    can_return_lse_for_decode: bool = True
+
     def __init__(
         self,
         num_heads: int,
@@ -196,7 +201,8 @@ class FlashInferMLAImpl(MLACommonImpl[MLACommonMetadata]):
             if is_quantized_kv_cache(self.kv_cache_dtype):
                 self.bmm2_scale *= layer._k_scale_float
 
-        o = trtllm_batch_decode_with_kv_cache_mla(
+        want_lse = self.need_to_return_lse_for_decode
+        result = trtllm_batch_decode_with_kv_cache_mla(
             query=q,
             kv_cache=kv_c_and_k_pe_cache.unsqueeze(1),
             workspace_buffer=self._workspace_buffer,
@@ -208,11 +214,19 @@ class FlashInferMLAImpl(MLACommonImpl[MLACommonMetadata]):
             max_seq_len=attn_metadata.max_seq_len,
             bmm1_scale=self.bmm1_scale,
             bmm2_scale=self.bmm2_scale,
+            return_lse=want_lse,
         )
+
+        if want_lse:
+            o, lse = result
+        else:
+            o, lse = result, None
 
         # Flatten the output for consistent shape
         o = o.view(-1, o.shape[-2], o.shape[-1])
+        if lse is not None:
+            # FlashInfer returns lse as (num_tokens, num_qo_heads) fp32, which
+            # is the same convention vllm's DCP combine path expects.
+            lse = lse.view(-1, lse.shape[-1])
 
-        # TODO: Return LSE pending support from Flashinfer API:
-        # https://github.com/flashinfer-ai/flashinfer/pull/1566
-        return o, None
+        return o, lse
