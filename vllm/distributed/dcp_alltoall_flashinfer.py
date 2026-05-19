@@ -191,9 +191,9 @@ class DCPAllToAllFlashInfer:
             tp_size=1,
             pp_size=1,
         )
-        return decode_cp_a2a_allocate_mnnvl_workspace(
-            cp_size, cp_rank, mapping=mapping
-        )
+        # New FlashInfer signature (post-#3210) takes mapping only;
+        # cp_size and cp_rank come from the mapping fields above.
+        return decode_cp_a2a_allocate_mnnvl_workspace(mapping)
 
     def run(
         self,
