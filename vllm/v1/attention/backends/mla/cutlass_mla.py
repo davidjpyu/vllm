@@ -218,34 +218,12 @@ class CutlassMLAImpl(MLACommonImpl[MLACommonMetadata]):
             if is_quantized_kv_cache(self.kv_cache_dtype)
             else q_nope.dtype
         )
-        # sm100_cutlass_mla_decode is known to write past the end of out and
-        # lse under some shape combinations (see cutlass#2274). The kernel
-        # uses MAX_HEADS=128 as a tile-width compile-time constant. Allocate
-        # a larger storage and *view* the first part at (B_q, MAX_HEADS, ...) —
-        # this keeps the shape and stride the kernel sees unchanged (so valid
-        # writes go to the right place), while the tail of the storage acts
-        # as slack that absorbs end-overflow OOB writes instead of stomping
-        # whatever PyTorch caching-allocator block sits adjacent to out/lse
-        # (which surfaces as IMA from the next-touching kernel — see
-        # the upstream packed-NCCL DCP A2A c>=16 crash report).
-        out_logical_elems = B_q * MAX_HEADS * D_latent
-        out_slack_elems = MAX_HEADS * D_latent  # one full MAX_HEADS row of slack
-        out_storage = q_nope.new_empty(
-            out_logical_elems + out_slack_elems, dtype=dtype
+        out = q_nope.new_empty((B_q, MAX_HEADS, D_latent), dtype=dtype)
+        lse = (
+            torch.empty((B_q, MAX_HEADS), dtype=torch.float32, device=q_nope.device)
+            if self.need_to_return_lse_for_decode
+            else torch.Tensor()
         )
-        out = out_storage[:out_logical_elems].view(B_q, MAX_HEADS, D_latent)
-
-        if self.need_to_return_lse_for_decode:
-            lse_logical_elems = B_q * MAX_HEADS
-            lse_slack_elems = MAX_HEADS
-            lse_storage = torch.empty(
-                lse_logical_elems + lse_slack_elems,
-                dtype=torch.float32, device=q_nope.device,
-            )
-            lse = lse_storage[:lse_logical_elems].view(B_q, MAX_HEADS)
-        else:
-            lse_storage = None  # noqa: F841 (kept for parity)
-            lse = torch.Tensor()
 
         ops.sm100_cutlass_mla_decode(
             out,
