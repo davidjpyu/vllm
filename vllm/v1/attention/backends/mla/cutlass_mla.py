@@ -193,14 +193,7 @@ class CutlassMLAImpl(MLACommonImpl[MLACommonMetadata]):
         assert D_q_pe == D_rope
         assert D_ckv == D_latent + D_rope
 
-        # MAX_HEADS=128 is the kernel's declared tile width. sm100 cutlass
-        # MLA decode is known to write past out[:, :MAX_HEADS] / lse[:, :MAX_HEADS]
-        # under some shape combinations (see cutlass#2274). Allocate with
-        # ALLOC_HEADS > MAX_HEADS so OOB writes land in our own slack region
-        # instead of stomping adjacent PyTorch caching-allocator tensors and
-        # surfacing as IMA from whatever kernel reads that memory next.
         MAX_HEADS = 128
-        ALLOC_HEADS = 256
         assert H <= MAX_HEADS, f"H must be <= {MAX_HEADS}, but got {H}"
 
         assert len(page_table.shape) == 2
@@ -225,9 +218,9 @@ class CutlassMLAImpl(MLACommonImpl[MLACommonMetadata]):
             if is_quantized_kv_cache(self.kv_cache_dtype)
             else q_nope.dtype
         )
-        out = q_nope.new_empty((B_q, ALLOC_HEADS, D_latent), dtype=dtype)
+        out = q_nope.new_empty((B_q, MAX_HEADS, D_latent), dtype=dtype)
         lse = (
-            torch.empty((B_q, ALLOC_HEADS), dtype=torch.float32, device=q_nope.device)
+            torch.empty((B_q, MAX_HEADS), dtype=torch.float32, device=q_nope.device)
             if self.need_to_return_lse_for_decode
             else torch.Tensor()
         )
