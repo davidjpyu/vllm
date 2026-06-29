@@ -27,7 +27,7 @@ from vllm.v1.attention.backends.utils import KVCacheLayoutType
 
 logger = init_logger(__name__)
 
-FLASHINFER_MLA_WORKSPACE_BUFFER_SIZE = 128 * 1024 * 1024
+FLASHINFER_MLA_WORKSPACE_BUFFER_SIZE = 512 * 1024 * 1024  # bumped 128->512MB: R1's trtllm_gen_softmax_workspace needs ~129MB, overflowed the 128MB default
 
 
 class FlashInferMLAMetadataBuilder(MLACommonMetadataBuilder[MLACommonMetadata]):
