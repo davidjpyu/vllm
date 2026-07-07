@@ -376,12 +376,28 @@ class Worker(WorkerBase):
         from vllm.distributed.parallel_state import get_dcp_group
 
         g = get_dcp_group()
-        DCPAllToAllFlashInfer.get(
-            cp_rank=g.rank_in_group,
-            cp_size=g.world_size,
-            cp_cpu_group=g.cpu_group,
-        )
-        logger.info("FlashInfer DCP A2A workspace pre-initialized.")
+        try:
+            DCPAllToAllFlashInfer.get(
+                cp_rank=g.rank_in_group,
+                cp_size=g.world_size,
+                cp_cpu_group=g.cpu_group,
+            )
+            logger.info("FlashInfer DCP A2A workspace pre-initialized.")
+        except Exception as e:
+            # FlashInfer A2A needs an MNNVL fabric workspace shared across the CP
+            # group. That works intra-node, and cross-node only on NVL72-class
+            # systems with IMEX/fabric handle exchange. On other setups the
+            # cross-node handle exchange (pidfd_open) or cuMemCreate(FABRIC) fails
+            # here. Rather than crash the engine, fall back to the NCCL all_to_all
+            # DCP path (the default; correct and portable).
+            logger.warning(
+                "FlashInfer DCP A2A workspace init failed (%s); falling back to "
+                "the NCCL all_to_all DCP path. FlashInfer A2A requires an MNNVL "
+                "fabric workspace across the CP group (GB200-NVL72-class for "
+                "cross-node); this configuration does not support it.",
+                repr(e),
+            )
+            set_dcp_a2a_backend("nccl")
 
     # FIXME(youkaichao & ywang96): Use TorchDispatchMode instead of memory pool
     # to hijack tensor allocation.
