@@ -87,7 +87,6 @@ from vllm.config.observability import DetailedTraceModules
 from vllm.config.parallel import (
     All2AllBackend,
     DataParallelBackend,
-    DCPA2ABackend,
     DCPCommBackend,
     DistributedExecutorBackend,
     ExpertPlacementStrategy,
@@ -467,7 +466,6 @@ class EngineArgs:
     prefill_context_parallel_size: int = ParallelConfig.prefill_context_parallel_size
     decode_context_parallel_size: int = ParallelConfig.decode_context_parallel_size
     dcp_comm_backend: DCPCommBackend = ParallelConfig.dcp_comm_backend
-    dcp_a2a_backend: DCPA2ABackend = ParallelConfig.dcp_a2a_backend
     dcp_kv_cache_interleave_size: int = ParallelConfig.dcp_kv_cache_interleave_size
     cp_kv_cache_interleave_size: int = ParallelConfig.cp_kv_cache_interleave_size
     data_parallel_size: int = ParallelConfig.data_parallel_size
@@ -984,10 +982,6 @@ class EngineArgs:
         parallel_group.add_argument(
             "--dcp-comm-backend",
             **parallel_kwargs["dcp_comm_backend"],
-        )
-        parallel_group.add_argument(
-            "--dcp-a2a-backend",
-            **parallel_kwargs["dcp_a2a_backend"],
         )
         parallel_group.add_argument(
             "--dcp-kv-cache-interleave-size",
@@ -2006,7 +2000,6 @@ class EngineArgs:
             worker_extension_cls=self.worker_extension_cls,
             decode_context_parallel_size=self.decode_context_parallel_size,
             dcp_comm_backend=self.dcp_comm_backend,
-            dcp_a2a_backend=self.dcp_a2a_backend,
             dcp_kv_cache_interleave_size=self.dcp_kv_cache_interleave_size,
             cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
             _api_process_count=self._api_process_count,
