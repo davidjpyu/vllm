@@ -393,10 +393,22 @@ class Worker(WorkerBase):
             return
 
         from vllm.v1.attention.ops.dcp_alltoall import set_dcp_a2a_backend
-        set_dcp_a2a_backend(pc.dcp_a2a_backend)
 
-        if pc.dcp_a2a_backend != "flashinfer":
+        # Auto-select the DCP A2A kernel (no user-facing flag): FlashInfer's fused
+        # LL128 A2A wins on Blackwell (sm_100+), where it is captured under CUDA
+        # graph; NCCL packed is used everywhere else. VLLM_DCP_A2A_BACKEND
+        # (nccl|flashinfer) is an undocumented override for debug/benchmarks.
+        override = os.getenv("VLLM_DCP_A2A_BACKEND", "auto").lower()
+        if override in ("nccl", "flashinfer"):
+            use_fi = override == "flashinfer"
+        else:
+            cap = current_platform.get_device_capability()
+            use_fi = cap is not None and cap.major >= 10  # Blackwell sm_100+
+
+        if not use_fi:
+            set_dcp_a2a_backend("nccl")
             return
+        set_dcp_a2a_backend("flashinfer")
 
         from vllm.distributed.dcp_alltoall_flashinfer import (
             DCPAllToAllFlashInfer,

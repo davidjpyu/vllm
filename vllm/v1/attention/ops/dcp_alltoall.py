@@ -47,14 +47,19 @@ def set_dcp_a2a_backend(backend: str) -> None:
 
 
 def _get_dcp_a2a_backend() -> str:
-    """Return the DCP A2A backend (``"nccl"`` or ``"flashinfer"``)."""
+    """Return the resolved DCP A2A kernel (``"nccl"`` or ``"flashinfer"``).
+
+    There is no user-facing flag: the choice is made automatically at worker
+    init (``gpu_worker._init_dcp_a2a_flashinfer_workspace``) — FlashInfer on
+    Blackwell (sm_100+, where its fused LL128 kernel is CUDA-graph captured and
+    wins), NCCL packed everywhere else — and cached here. ``VLLM_DCP_A2A_BACKEND``
+    (``nccl``|``flashinfer``) is an undocumented override for debug/benchmarks.
+    """
     if _DCP_A2A_BACKEND is not None:
         return _DCP_A2A_BACKEND
-    try:
-        from vllm.config import get_current_vllm_config
-        return get_current_vllm_config().parallel_config.dcp_a2a_backend
-    except Exception:
-        return "nccl"
+    import os
+
+    return os.getenv("VLLM_DCP_A2A_BACKEND", "nccl").lower()
 
 
 def _lse_weighted_combine(
